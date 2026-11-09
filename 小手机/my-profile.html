@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Echo · 我的资料</title>
+
+<!-- 字体: Cormorant Garamond(展示标题) / Liter(英文小标) / MiSans(中文) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital@1&family=Liter&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" rel="stylesheet">
+<!-- 图标: Font Awesome 6 字体图标(纯 CSS, 无 JS) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+/* ============================================================
+   Echo · 全局设计变量(所有页面单文件内保持一致的副本)
+   与 design-tokens.css 同步
+   ============================================================ */
+:root {
+  /* 颜色 */
+  --bg-base: #FDFEFF;
+  --bg-base-end: #F0F7FC;
+  --blob-blue: rgba(214, 233, 247, 0.55);
+  --blob-deep: rgba(174, 211, 236, 0.40);
+  --blob-cyan: rgba(205, 235, 240, 0.38);
+
+  --brand-blue: #9CC4E4;
+  --brand-blue-deep: #7FA8CC;
+  --brand-ink: #4E6B80;
+  --brand-deep: #5E7B90;
+  --brand-muted: #9DB4C4;
+  --line-soft: #C7D9E6;
+  --divider: #E7EFF5;
+  --track: #E2EDF5;
+  --chevron: #C2D3DF;
+  --icon-tint: #7FA8CC;
+  --icon-inactive: #A9BFCE;
+  --home-indicator: #D3E0EA;
+
+  /* 头像渐变 */
+  --avatar-a-start: #CFE4F4;
+  --avatar-a-end: #9CC4E4;
+  --avatar-b-start: #E4EEF6;
+  --avatar-b-end: #B8CFE0;
+
+  /* 聊天气泡 */
+  --bubble-peer-bg: rgba(255, 255, 255, 0.62);
+  --bubble-mine-bg: rgba(156, 196, 228, 0.28);
+  --radius-bubble-peer: 4px 20px 20px 20px;
+  --radius-bubble-mine: 20px 4px 20px 20px;
+
+  /* 液态玻璃 */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.90);
+  --glass-border-width: 1px;
+  --blur-radius: 12px;
+  --glass-blur: blur(var(--blur-radius)) saturate(1.4);
+
+  /* 阴影 */
+  --shadow-glass: 0 8px 20px rgba(143, 186, 217, 0.18);
+  --shadow-glass-lg: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-tabbar: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-accent: 0 8px 20px rgba(143, 186, 217, 0.40);
+
+  /* 圆角 */
+  --radius-card-lg: 24px;
+  --radius-card: 22px;
+  --radius-field: 16px;
+  --radius-pill: 22px;
+  --radius-tabbar: 24px;
+  --radius-chip: 13px;
+  --radius-avatar: 50%;
+
+  /* 尺寸 */
+  --phone-max-w: 420px;
+  --page-padding-x: 20px;
+  --tabbar-height: 70px;
+  --tabbar-margin: 20px;
+  --content-bottom-pad: calc(var(--tabbar-height) + var(--tabbar-margin) + 24px);
+  --inputbar-height: 60px;
+  --bubble-max-w: 68%;
+
+  /* 字体 */
+  --font-zh: "MiSans", "PingFang SC", sans-serif;
+  --font-en: "Liter", sans-serif;
+  --font-display: "Cormorant Garamond", serif;
+}
+
+/* ============================================================
+   本页样式: 我的资料 my-profile.html
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+button, a {
+  font: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+
+body {
+  font-family: var(--font-zh);
+  background: #EAF2F8;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机外框(移动端占满, 桌面端居中限宽) */
+.phone {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--bg-base), var(--bg-base-end));
+}
+
+@media (min-width: 480px) {
+  body { align-items: center; padding: 24px 0; }
+  .phone {
+    min-height: 844px;
+    border-radius: 40px;
+    box-shadow: 0 24px 64px rgba(94, 123, 144, 0.25);
+  }
+}
+
+/* 背景光斑(纯装饰) */
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.blob--a { width: 430px; height: 400px; top: -110px; left: -70px;
+  background: radial-gradient(circle, var(--blob-blue) 0%, transparent 70%); }
+.blob--b { width: 360px; height: 340px; top: 320px; right: -110px;
+  background: radial-gradient(circle, var(--blob-deep) 0%, transparent 70%); }
+
+/* 状态栏 */
+.status-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 0;
+  color: var(--icon-inactive);
+}
+.status-bar svg { display: block; }
+
+/* 玻璃质感(通用类) */
+.glass {
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+
+/* 子页导航 */
+.subnav {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+}
+.subnav__btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-deep);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.subnav__title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 21px;
+  letter-spacing: 1px;
+  color: var(--brand-deep);
+}
+.subnav__spacer { width: 36px; height: 36px; flex-shrink: 0; }
+
+/* 页面主体 */
+.profile {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 8px var(--page-padding-x) 40px;
+}
+
+/* 头像 + 相机角标 */
+.profile-avatar {
+  position: relative;           /* 仅约束角标, 不影响布局 */
+  width: 100px;
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-avatar);
+  border: 1.5px solid rgba(255, 255, 255, 0.8);
+  background: linear-gradient(135deg, var(--avatar-b-start), var(--avatar-b-end));
+  color: #FFFFFF;
+}
+.profile-avatar__initial { font-size: 34px; font-weight: 600; }
+.profile-avatar__badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #FFFFFF;
+  box-shadow: var(--shadow-glass);
+  color: var(--icon-tint);
+  font-size: 12px;
+}
+.profile__hint { margin-top: -8px; font-size: 11.5px; color: var(--brand-muted); }
+
+/* 表单 */
+.profile-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 12px 16px;
+  border-radius: var(--radius-field);
+}
+.field--area { align-items: flex-start; min-height: 96px; }
+.field__label {
+  width: 52px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--brand-muted);
+}
+.field__input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-zh);
+  font-size: 13.5px;
+  color: var(--brand-ink);
+}
+.field__input::placeholder { color: var(--brand-muted); }
+.field__textarea {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  resize: none;
+  font-family: var(--font-zh);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--brand-ink);
+}
+
+/* 提交按钮(渐变胶囊) */
+.btn-primary {
+  width: 100%;
+  height: 52px;
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 26px;
+  background: linear-gradient(0deg, var(--brand-blue), var(--brand-blue-deep));
+  box-shadow: var(--shadow-accent);
+  font-size: 15px;
+  font-weight: 600;
+  color: #FFFFFF;
+}
+</style>
+</head>
+
+<body>
+  <div class="phone" id="screen-profile">
+
+    <div class="blob blob--a" aria-hidden="true"></div>
+    <div class="blob blob--b" aria-hidden="true"></div>
+
+    <header class="status-bar" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="currentColor"><rect x="0" y="9" width="3" height="6" rx="1"/><rect x="4" y="6" width="3" height="9" rx="1"/><rect x="8" y="3" width="3" height="12" rx="1"/><rect x="12" y="0" width="3" height="15" rx="1"/></svg>
+      <svg width="16" height="15" viewBox="0 0 16 15" fill="currentColor"><path d="M8 8.5a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4ZM8 4.9c1.5 0 2.9.6 3.9 1.6l-1.4 1.4a3.6 3.6 0 0 0-5 0L4.1 6.5A5.6 5.6 0 0 1 8 4.9Zm0-4.2c2.7 0 5.2 1.1 7 2.9l-1.4 1.4a7.8 7.8 0 0 0-11.2 0L1 3.6A9.8 9.8 0 0 1 8 .7Z"/></svg>
+      <svg width="22" height="15" viewBox="0 0 25 15" fill="none" stroke="currentColor"><rect x="0.5" y="1.5" width="20" height="12" rx="3.5"/><rect x="3" y="4" width="13" height="7" rx="1.5" fill="currentColor" stroke="none"/><path d="M23.5 5.5v4" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </header>
+
+    <!-- 子页导航 -->
+    <header class="subnav" id="subnav">
+      <a class="subnav__btn" id="btn-back" href="chat-list.html" aria-label="返回">
+        <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+      </a>
+      <h1 class="subnav__title">My Profile</h1>
+      <div class="subnav__spacer" aria-hidden="true"></div>
+    </header>
+
+    <main class="profile" id="profile-main">
+
+      <!-- 头像(点击换头像) -->
+      <button class="profile-avatar" id="btn-avatar-upload" aria-label="更换头像">
+        <span class="profile-avatar__initial">我</span>
+        <span class="profile-avatar__badge"><i class="fa-solid fa-camera" aria-hidden="true"></i></span>
+      </button>
+      <p class="profile__hint">聊天中「我」的显示身份</p>
+
+      <!-- 表单(Mock 值, 绑定真实数据时替换) -->
+      <form class="profile-form" id="profile-form">
+        <div class="field glass">
+          <label class="field__label" for="input-nickname">昵称</label>
+          <input class="field__input" id="input-nickname" type="text" value="拾贝人">
+        </div>
+        <div class="field glass">
+          <label class="field__label" for="input-id">ID</label>
+          <input class="field__input" id="input-id" type="text" value="ECHO-0001" readonly>
+        </div>
+        <div class="field field--area glass">
+          <label class="field__label" for="input-bio">签名</label>
+          <textarea class="field__textarea" id="input-bio">慢慢走，收集一路的浪声。</textarea>
+        </div>
+      </form>
+
+      <button class="btn-primary" id="btn-save">保存</button>
+
+    </main>
+
+  </div>
+</body>
+</html>

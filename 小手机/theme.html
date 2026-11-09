@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Echo · 美化</title>
+
+<!-- 字体: Cormorant Garamond(展示标题) / Liter(英文小标) / MiSans(中文) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital@1&family=Liter&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" rel="stylesheet">
+<!-- 图标: Font Awesome 6 字体图标(纯 CSS, 无 JS) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+/* ============================================================
+   Echo · 全局设计变量(所有页面单文件内保持一致的副本)
+   与 design-tokens.css 同步
+   ============================================================ */
+:root {
+  /* 颜色 */
+  --bg-base: #FDFEFF;
+  --bg-base-end: #F0F7FC;
+  --blob-blue: rgba(214, 233, 247, 0.55);
+  --blob-deep: rgba(174, 211, 236, 0.40);
+  --blob-cyan: rgba(205, 235, 240, 0.38);
+
+  --brand-blue: #9CC4E4;
+  --brand-blue-deep: #7FA8CC;
+  --brand-ink: #4E6B80;
+  --brand-deep: #5E7B90;
+  --brand-muted: #9DB4C4;
+  --line-soft: #C7D9E6;
+  --divider: #E7EFF5;
+  --track: #E2EDF5;
+  --chevron: #C2D3DF;
+  --icon-tint: #7FA8CC;
+  --icon-inactive: #A9BFCE;
+  --home-indicator: #D3E0EA;
+
+  /* 头像渐变 */
+  --avatar-a-start: #CFE4F4;
+  --avatar-a-end: #9CC4E4;
+  --avatar-b-start: #E4EEF6;
+  --avatar-b-end: #B8CFE0;
+
+  /* 聊天气泡 */
+  --bubble-peer-bg: rgba(255, 255, 255, 0.62);
+  --bubble-mine-bg: rgba(156, 196, 228, 0.28);
+  --radius-bubble-peer: 4px 20px 20px 20px;
+  --radius-bubble-mine: 20px 4px 20px 20px;
+
+  /* 液态玻璃 */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.90);
+  --glass-border-width: 1px;
+  --blur-radius: 12px;
+  --glass-blur: blur(var(--blur-radius)) saturate(1.4);
+
+  /* 阴影 */
+  --shadow-glass: 0 8px 20px rgba(143, 186, 217, 0.18);
+  --shadow-glass-lg: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-tabbar: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-accent: 0 8px 20px rgba(143, 186, 217, 0.40);
+
+  /* 圆角 */
+  --radius-card-lg: 24px;
+  --radius-card: 22px;
+  --radius-field: 16px;
+  --radius-group: 20px;
+  --radius-pill: 22px;
+  --radius-tabbar: 24px;
+  --radius-chip: 13px;
+  --radius-avatar: 50%;
+
+  /* 尺寸 */
+  --phone-max-w: 420px;
+  --page-padding-x: 20px;
+  --tabbar-height: 70px;
+  --tabbar-margin: 20px;
+  --content-bottom-pad: calc(var(--tabbar-height) + var(--tabbar-margin) + 24px);
+  --inputbar-height: 60px;
+  --bubble-max-w: 68%;
+
+  /* 控件 */
+  --slider-track-h: 4px;
+  --slider-knob: 12px;
+  --seg-bg: #E9F1F7;
+
+  /* 字体 */
+  --font-zh: "MiSans", "PingFang SC", sans-serif;
+  --font-en: "Liter", sans-serif;
+  --font-display: "Cormorant Garamond", serif;
+}
+
+/* ============================================================
+   本页样式: 美化 theme.html
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+button, a {
+  font: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+
+body {
+  font-family: var(--font-zh);
+  background: #EAF2F8;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机外框(移动端占满, 桌面端居中限宽) */
+.phone {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--bg-base), var(--bg-base-end));
+}
+
+@media (min-width: 480px) {
+  body { align-items: center; padding: 24px 0; }
+  .phone {
+    min-height: 844px;
+    border-radius: 40px;
+    box-shadow: 0 24px 64px rgba(94, 123, 144, 0.25);
+  }
+}
+
+/* 背景光斑(纯装饰) */
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.blob--a { width: 430px; height: 400px; top: -110px; left: -70px;
+  background: radial-gradient(circle, var(--blob-blue) 0%, transparent 70%); }
+.blob--b { width: 360px; height: 340px; top: 320px; right: -110px;
+  background: radial-gradient(circle, var(--blob-deep) 0%, transparent 70%); }
+
+/* 状态栏 */
+.status-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 0;
+  color: var(--icon-inactive);
+}
+.status-bar svg { display: block; }
+
+/* 玻璃质感(通用类) */
+.glass {
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+
+/* 子页导航 */
+.subnav {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+}
+.subnav__btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-deep);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.subnav__title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 21px;
+  letter-spacing: 1px;
+  color: var(--brand-deep);
+}
+.subnav__spacer { width: 36px; height: 36px; flex-shrink: 0; }
+
+/* 页面主体 */
+.theme {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 8px var(--page-padding-x) 40px;
+}
+
+/* 分区 */
+.sec { display: flex; flex-direction: column; gap: 8px; }
+.sec__title {
+  font-family: var(--font-en);
+  font-size: 10px;
+  letter-spacing: 3px;
+  color: var(--brand-muted);
+}
+.sec__card {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-group);
+  overflow: hidden;
+}
+.sec__card--padded { padding: 16px; gap: 14px; }
+
+/* 单行卡(锁屏/壁纸) */
+.row-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 84px;
+  padding: 0 16px;
+  border-radius: var(--radius-group);
+  text-align: left;
+}
+.row-card__thumb {
+  width: 52px;
+  height: 64px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, var(--bg-base), #CFE4F4);
+  border: 1px solid var(--glass-border);
+  flex-shrink: 0;
+}
+.row-card__label { flex: 1; font-size: 13.5px; color: var(--brand-ink); }
+.row-card__value { font-size: 12px; color: var(--brand-muted); }
+.row-card__icon { color: var(--icon-tint); font-size: 15px; flex-shrink: 0; }
+.row-card__arrow { color: var(--chevron); font-size: 12px; flex-shrink: 0; }
+
+/* 锁屏圆环头像预览 */
+.ring-avatar {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 2px solid var(--brand-blue);
+  background: rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+}
+.ring-avatar__inner {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--avatar-a-start), var(--avatar-a-end));
+  color: #FFFFFF;
+  font-size: 17px;
+}
+
+/* 滑杆行 */
+.slider-row { display: flex; flex-direction: column; gap: 8px; }
+.slider-row__head { display: flex; align-items: center; }
+.slider-row__label { flex: 1; font-size: 13px; color: var(--brand-ink); }
+.slider-row__value { font-family: var(--font-en); font-size: 12.5px; color: var(--brand-muted); }
+.slider-row__track {
+  position: relative;           /* 仅约束圆钮 */
+  height: var(--slider-track-h);
+  border-radius: 2px;
+  background: var(--track);
+}
+.slider-row__fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--brand-blue);
+}
+.slider-row__knob {
+  position: absolute;
+  top: 50%;
+  width: var(--slider-knob);
+  height: var(--slider-knob);
+  border-radius: 50%;
+  background: #FFFFFF;
+  border: 2px solid var(--brand-blue);
+  transform: translate(-50%, -50%);
+}
+
+/* 形状分段切换 */
+.opt-row {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+}
+.opt-row__label { flex: 1; font-size: 13px; color: var(--brand-ink); }
+.seg {
+  display: flex;
+  width: 120px;
+  height: 30px;
+  padding: 3px;
+  border-radius: 15px;
+  background: var(--seg-bg);
+}
+.seg__item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  font-size: 12px;
+  color: var(--brand-muted);
+}
+.seg__item--active {
+  background: #FFFFFF;
+  box-shadow: 0 2px 6px rgba(143, 186, 217, 0.18);
+  font-weight: 600;
+  color: var(--brand-ink);
+}
+
+/* 字体颜色色点 */
+.color-dots { display: flex; gap: 10px; }
+.color-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+}
+.color-dot--ink  { background: #4E6B80; }
+.color-dot--gray { background: #9DB4C4; }
+.color-dot--white { background: #FFFFFF; border: 1px solid var(--line-soft); }
+.color-dot--active { box-shadow: 0 0 0 2px var(--brand-blue); }
+
+/* 组内分隔 */
+.group-divider { height: 1px; background: var(--divider); }
+
+/* 组内文字行 */
+.group-row {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  text-align: left;
+}
+.group-row__label { flex: 1; font-size: 13px; color: var(--brand-ink); }
+.group-row__value { font-size: 12px; color: var(--brand-muted); }
+.group-row__arrow { color: var(--chevron); font-size: 12px; flex-shrink: 0; margin-left: 4px; }
+</style>
+</head>
+
+<body>
+  <div class="phone" id="screen-theme">
+
+    <div class="blob blob--a" aria-hidden="true"></div>
+    <div class="blob blob--b" aria-hidden="true"></div>
+
+    <header class="status-bar" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="currentColor"><rect x="0" y="9" width="3" height="6" rx="1"/><rect x="4" y="6" width="3" height="9" rx="1"/><rect x="8" y="3" width="3" height="12" rx="1"/><rect x="12" y="0" width="3" height="15" rx="1"/></svg>
+      <svg width="16" height="15" viewBox="0 0 16 15" fill="currentColor"><path d="M8 8.5a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4ZM8 4.9c1.5 0 2.9.6 3.9 1.6l-1.4 1.4a3.6 3.6 0 0 0-5 0L4.1 6.5A5.6 5.6 0 0 1 8 4.9Zm0-4.2c2.7 0 5.2 1.1 7 2.9l-1.4 1.4a7.8 7.8 0 0 0-11.2 0L1 3.6A9.8 9.8 0 0 1 8 .7Z"/></svg>
+      <svg width="22" height="15" viewBox="0 0 25 15" fill="none" stroke="currentColor"><rect x="0.5" y="1.5" width="20" height="12" rx="3.5"/><rect x="3" y="4" width="13" height="7" rx="1.5" fill="currentColor" stroke="none"/><path d="M23.5 5.5v4" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </header>
+
+    <!-- 子页导航 -->
+    <header class="subnav" id="subnav">
+      <a class="subnav__btn" id="btn-back" href="other.html" aria-label="返回">
+        <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+      </a>
+      <h1 class="subnav__title">Theme</h1>
+      <div class="subnav__spacer" aria-hidden="true"></div>
+    </header>
+
+    <main class="theme" id="theme-main">
+
+      <!-- 锁屏 -->
+      <section class="sec" id="sec-lock" aria-label="锁屏">
+        <h2 class="sec__title">锁屏&nbsp;&nbsp;LOCKSCREEN</h2>
+        <button class="row-card glass" id="btn-lock-avatar">
+          <span class="ring-avatar">
+            <span class="ring-avatar__inner"><i class="fa-solid fa-user" aria-hidden="true"></i></span>
+          </span>
+          <span class="row-card__label">自定义圆环头像</span>
+          <span class="row-card__value">导入图片</span>
+          <i class="fa-solid fa-chevron-right row-card__arrow" aria-hidden="true"></i>
+        </button>
+      </section>
+
+      <!-- 壁纸 -->
+      <section class="sec" id="sec-wallpaper" aria-label="壁纸">
+        <h2 class="sec__title">壁纸&nbsp;&nbsp;WALLPAPER</h2>
+        <button class="row-card glass" id="btn-wallpaper">
+          <span class="row-card__thumb" aria-hidden="true"></span>
+          <span class="row-card__label">导入自定义壁纸</span>
+          <i class="fa-regular fa-image row-card__icon" aria-hidden="true"></i>
+        </button>
+      </section>
+
+      <!-- 图标 -->
+      <section class="sec" id="sec-icon" aria-label="图标">
+        <h2 class="sec__title">图标&nbsp;&nbsp;ICON</h2>
+        <div class="sec__card sec__card--padded glass">
+
+          <div class="slider-row" id="opt-icon-size">
+            <div class="slider-row__head">
+              <span class="slider-row__label">图标大小</span>
+              <span class="slider-row__value">中</span>
+            </div>
+            <div class="slider-row__track">
+              <div class="slider-row__fill" style="width:50%"></div>
+              <div class="slider-row__knob" style="left:50%"></div>
+            </div>
+          </div>
+
+          <div class="opt-row" id="opt-icon-shape">
+            <span class="opt-row__label">形状</span>
+            <div class="seg" role="tablist">
+              <button class="seg__item seg__item--active" id="shape-round" role="tab">圆角</button>
+              <button class="seg__item" id="shape-square" role="tab">方角</button>
+            </div>
+          </div>
+
+          <div class="group-divider" aria-hidden="true"></div>
+
+          <button class="group-row" id="btn-icon-import">
+            <span class="group-row__label">自定义图标</span>
+            <span class="group-row__value">导入文件</span>
+            <i class="fa-solid fa-chevron-right group-row__arrow" aria-hidden="true"></i>
+          </button>
+
+        </div>
+      </section>
+
+      <!-- 字体 -->
+      <section class="sec" id="sec-font" aria-label="字体">
+        <h2 class="sec__title">字体&nbsp;&nbsp;FONT</h2>
+        <div class="sec__card sec__card--padded glass">
+
+          <div class="slider-row" id="opt-font-size">
+            <div class="slider-row__head">
+              <span class="slider-row__label">字体大小</span>
+              <span class="slider-row__value">标准</span>
+            </div>
+            <div class="slider-row__track">
+              <div class="slider-row__fill" style="width:45%"></div>
+              <div class="slider-row__knob" style="left:45%"></div>
+            </div>
+          </div>
+
+          <div class="opt-row" id="opt-font-color">
+            <span class="opt-row__label">字体颜色</span>
+            <div class="color-dots" role="radiogroup" aria-label="字体颜色">
+              <button class="color-dot color-dot--ink color-dot--active" id="font-color-ink" aria-label="深色" role="radio" aria-checked="true"></button>
+              <button class="color-dot color-dot--gray" id="font-color-gray" aria-label="灰蓝" role="radio"></button>
+              <button class="color-dot color-dot--white" id="font-color-white" aria-label="白色" role="radio"></button>
+            </div>
+          </div>
+
+          <div class="group-divider" aria-hidden="true"></div>
+
+          <button class="group-row" id="btn-font-import">
+            <span class="group-row__label">自定义字体</span>
+            <span class="group-row__value">导入文件</span>
+            <i class="fa-solid fa-chevron-right group-row__arrow" aria-hidden="true"></i>
+          </button>
+
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+</body>
+</html>

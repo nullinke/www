@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Echo · 记忆库</title>
+
+<!-- 字体: Cormorant Garamond(展示标题) / Liter(英文小标) / MiSans(中文) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital@1&family=Liter&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" rel="stylesheet">
+<!-- 图标: Font Awesome 6 字体图标(纯 CSS, 无 JS) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+/* ============================================================
+   Echo · 全局设计变量(所有页面单文件内保持一致的副本)
+   与 design-tokens.css 同步
+   ============================================================ */
+:root {
+  /* 颜色 */
+  --bg-base: #FDFEFF;
+  --bg-base-end: #F0F7FC;
+  --blob-blue: rgba(214, 233, 247, 0.55);
+  --blob-deep: rgba(174, 211, 236, 0.40);
+  --blob-cyan: rgba(205, 235, 240, 0.38);
+
+  --brand-blue: #9CC4E4;
+  --brand-blue-deep: #7FA8CC;
+  --brand-ink: #4E6B80;
+  --brand-deep: #5E7B90;
+  --brand-muted: #9DB4C4;
+  --line-soft: #C7D9E6;
+  --divider: #E7EFF5;
+  --track: #E2EDF5;
+  --chevron: #C2D3DF;
+  --icon-tint: #7FA8CC;
+  --icon-inactive: #A9BFCE;
+  --home-indicator: #D3E0EA;
+
+  /* 头像渐变 */
+  --avatar-a-start: #CFE4F4;
+  --avatar-a-end: #9CC4E4;
+  --avatar-b-start: #E4EEF6;
+  --avatar-b-end: #B8CFE0;
+
+  /* 聊天气泡 */
+  --bubble-peer-bg: rgba(255, 255, 255, 0.62);
+  --bubble-mine-bg: rgba(156, 196, 228, 0.28);
+  --radius-bubble-peer: 4px 20px 20px 20px;
+  --radius-bubble-mine: 20px 4px 20px 20px;
+
+  /* 液态玻璃 */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.90);
+  --glass-border-width: 1px;
+  --blur-radius: 12px;
+  --glass-blur: blur(var(--blur-radius)) saturate(1.4);
+
+  /* 阴影 */
+  --shadow-glass: 0 8px 20px rgba(143, 186, 217, 0.18);
+  --shadow-glass-lg: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-tabbar: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-accent: 0 8px 20px rgba(143, 186, 217, 0.40);
+
+  /* 圆角 */
+  --radius-card-lg: 24px;
+  --radius-card: 22px;
+  --radius-field: 16px;
+  --radius-group: 20px;
+  --radius-pill: 22px;
+  --radius-tabbar: 24px;
+  --radius-chip: 13px;
+  --radius-avatar: 50%;
+
+  /* 尺寸 */
+  --phone-max-w: 420px;
+  --page-padding-x: 20px;
+  --tabbar-height: 70px;
+  --tabbar-margin: 20px;
+  --content-bottom-pad: calc(var(--tabbar-height) + var(--tabbar-margin) + 24px);
+  --inputbar-height: 60px;
+  --bubble-max-w: 68%;
+
+  /* 控件 */
+  --slider-track-h: 4px;
+  --slider-knob: 12px;
+  --seg-bg: #E9F1F7;
+
+  /* 字体 */
+  --font-zh: "MiSans", "PingFang SC", sans-serif;
+  --font-en: "Liter", sans-serif;
+  --font-display: "Cormorant Garamond", serif;
+}
+
+/* ============================================================
+   本页样式: 记忆库 memory.html
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+button, a {
+  font: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+
+body {
+  font-family: var(--font-zh);
+  background: #EAF2F8;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机外框(移动端占满, 桌面端居中限宽) */
+.phone {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--bg-base), var(--bg-base-end));
+}
+
+@media (min-width: 480px) {
+  body { align-items: center; padding: 24px 0; }
+  .phone {
+    min-height: 844px;
+    border-radius: 40px;
+    box-shadow: 0 24px 64px rgba(94, 123, 144, 0.25);
+  }
+}
+
+/* 背景光斑(纯装饰) */
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.blob--a { width: 430px; height: 400px; top: -110px; left: -70px;
+  background: radial-gradient(circle, var(--blob-blue) 0%, transparent 70%); }
+.blob--b { width: 360px; height: 340px; top: 320px; right: -110px;
+  background: radial-gradient(circle, var(--blob-deep) 0%, transparent 70%); }
+
+/* 状态栏 */
+.status-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 0;
+  color: var(--icon-inactive);
+}
+.status-bar svg { display: block; }
+
+/* 玻璃质感(通用类) */
+.glass {
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+
+/* 子页导航 */
+.subnav {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+}
+.subnav__btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-deep);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.subnav__title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 21px;
+  letter-spacing: 1px;
+  color: var(--brand-deep);
+}
+.subnav__spacer { width: 36px; height: 36px; flex-shrink: 0; }
+
+/* 顶部分段切换(居中) */
+.toolbar {
+  display: flex;
+  justify-content: center;
+  padding: 4px var(--page-padding-x) 0;
+}
+.seg {
+  display: flex;
+  width: 150px;
+  height: 34px;
+  padding: 3px;
+  border-radius: 17px;
+  background: var(--seg-bg);
+}
+.seg__item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 13px;
+  font-size: 13px;
+  color: var(--brand-muted);
+}
+.seg__item--active {
+  background: #FFFFFF;
+  box-shadow: 0 2px 6px rgba(143, 186, 217, 0.18);
+  font-weight: 600;
+  color: var(--brand-ink);
+}
+
+/* 页面主体 */
+.memory {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px var(--page-padding-x) 40px;
+}
+
+/* 搜索框 */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 20px;
+}
+.search-bar i { font-size: 13px; color: var(--icon-tint); flex-shrink: 0; }
+.search-bar__input {
+  flex: 1;
+  border: none;
+  background: none;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--brand-ink);
+}
+.search-bar__input::placeholder { color: var(--brand-muted); }
+
+/* 类别筛选 */
+.filter-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.filter-row::-webkit-scrollbar { display: none; }
+.filter-chip {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--glass-border);
+  font-size: 12px;
+  color: var(--brand-muted);
+  flex-shrink: 0;
+}
+.filter-chip--active {
+  background: rgba(156, 196, 228, 0.35);
+  border-color: transparent;
+  font-weight: 600;
+  color: var(--brand-deep);
+}
+
+/* 记忆卡 */
+.mem-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--radius-card);
+  text-align: left;
+}
+.mem-card__meta {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--brand-muted);
+}
+.mem-card__text {
+  font-size: 13.5px;
+  line-height: 22px;
+  color: var(--brand-ink);
+}
+.mem-card__foot { display: flex; align-items: center; }
+.mem-card__tags {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--icon-tint);
+}
+.mem-card__more {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-deep);
+  flex-shrink: 0;
+}
+.mem-card__more i { font-size: 10px; color: var(--chevron); }
+</style>
+</head>
+
+<body>
+  <div class="phone" id="screen-memory">
+
+    <div class="blob blob--a" aria-hidden="true"></div>
+    <div class="blob blob--b" aria-hidden="true"></div>
+
+    <header class="status-bar" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="currentColor"><rect x="0" y="9" width="3" height="6" rx="1"/><rect x="4" y="6" width="3" height="9" rx="1"/><rect x="8" y="3" width="3" height="12" rx="1"/><rect x="12" y="0" width="3" height="15" rx="1"/></svg>
+      <svg width="16" height="15" viewBox="0 0 16 15" fill="currentColor"><path d="M8 8.5a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4ZM8 4.9c1.5 0 2.9.6 3.9 1.6l-1.4 1.4a3.6 3.6 0 0 0-5 0L4.1 6.5A5.6 5.6 0 0 1 8 4.9Zm0-4.2c2.7 0 5.2 1.1 7 2.9l-1.4 1.4a7.8 7.8 0 0 0-11.2 0L1 3.6A9.8 9.8 0 0 1 8 .7Z"/></svg>
+      <svg width="22" height="15" viewBox="0 0 25 15" fill="none" stroke="currentColor"><rect x="0.5" y="1.5" width="20" height="12" rx="3.5"/><rect x="3" y="4" width="13" height="7" rx="1.5" fill="currentColor" stroke="none"/><path d="M23.5 5.5v4" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </header>
+
+    <!-- 子页导航 -->
+    <header class="subnav" id="subnav">
+      <a class="subnav__btn" id="btn-back" href="other.html" aria-label="返回">
+        <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+      </a>
+      <h1 class="subnav__title">Memories</h1>
+      <div class="subnav__spacer" aria-hidden="true"></div>
+    </header>
+
+    <!-- 档案 / 记忆库 分段切换 -->
+    <div class="toolbar">
+      <nav class="seg" role="tablist" aria-label="档案与记忆库切换">
+        <a class="seg__item" id="seg-archive" href="archive.html" role="tab" aria-selected="false">档案</a>
+        <a class="seg__item seg__item--active" id="seg-memory" href="memory.html" role="tab" aria-selected="true">记忆库</a>
+      </nav>
+    </div>
+
+    <main class="memory" id="memory-main">
+
+      <!-- 搜索 -->
+      <label class="search-bar glass" id="search-memory">
+        <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+        <input class="search-bar__input" id="search-memory-input" type="search" placeholder="搜索记忆…">
+      </label>
+
+      <!-- 类别筛选 -->
+      <nav class="filter-row" id="memory-filter" aria-label="记忆类别筛选">
+        <button class="filter-chip filter-chip--active" id="filter-all" type="button">全部</button>
+        <button class="filter-chip" id="filter-promise" type="button">约定</button>
+        <button class="filter-chip" id="filter-event" type="button">事件</button>
+        <button class="filter-chip" id="filter-hobby" type="button">喜好</button>
+      </nav>
+
+      <!-- 记忆卡: 约定 -->
+      <article class="mem-card glass" id="memory-1">
+        <p class="mem-card__meta">Nereus 记的 · 约定 · 9 月 30 日下午</p>
+        <p class="mem-card__text">灯塔项目的约定改为周五在北岸见面，带上那本蓝色封面的笔记本。</p>
+        <div class="mem-card__foot">
+          <div class="mem-card__tags">
+            <span>#约定</span>
+            <span>#灯塔</span>
+          </div>
+          <a class="mem-card__more" id="btn-memory-detail-1" href="memory.html">
+            详情<i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+          </a>
+        </div>
+      </article>
+
+      <!-- 记忆卡: 事件 -->
+      <article class="mem-card glass" id="memory-2">
+        <p class="mem-card__meta">Nereus 记的 · 事件 · 9 月 30 日中午</p>
+        <p class="mem-card__text">今天一起看了一整片完整的晚霞，他说要把它收进第七个瓶子里。</p>
+        <div class="mem-card__foot">
+          <div class="mem-card__tags">
+            <span>#晚霞</span>
+          </div>
+          <a class="mem-card__more" id="btn-memory-detail-2" href="memory.html">
+            详情<i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+          </a>
+        </div>
+      </article>
+
+      <!-- 记忆卡: 喜好 -->
+      <article class="mem-card glass" id="memory-3">
+        <p class="mem-card__meta">我记的 · 喜好 · 9 月 28 日</p>
+        <p class="mem-card__text">Nereus 不喜欢太甜的东西，饼干要少放一半糖。</p>
+        <div class="mem-card__foot">
+          <div class="mem-card__tags">
+            <span>#喜好</span>
+          </div>
+          <a class="mem-card__more" id="btn-memory-detail-3" href="memory.html">
+            详情<i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+          </a>
+        </div>
+      </article>
+
+    </main>
+  </div>
+</body>
+</html>

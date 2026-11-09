@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Echo · 其他</title>
+
+<!-- 字体: Cormorant Garamond(展示标题) / Liter(英文小标) / MiSans(中文) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital@1&family=Liter&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" rel="stylesheet">
+<!-- 图标: Font Awesome 6 字体图标(纯 CSS, 无 JS) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+/* ============================================================
+   Echo · 全局设计变量(所有页面单文件内保持一致的副本)
+   与 design-tokens.css 同步
+   ============================================================ */
+:root {
+  /* 颜色 */
+  --bg-base: #FDFEFF;
+  --bg-base-end: #F0F7FC;
+  --blob-blue: rgba(214, 233, 247, 0.55);
+  --blob-deep: rgba(174, 211, 236, 0.40);
+  --blob-cyan: rgba(205, 235, 240, 0.38);
+
+  --brand-blue: #9CC4E4;
+  --brand-blue-deep: #7FA8CC;
+  --brand-ink: #4E6B80;
+  --brand-deep: #5E7B90;
+  --brand-muted: #9DB4C4;
+  --line-soft: #C7D9E6;
+  --divider: #E7EFF5;
+  --track: #E2EDF5;
+  --chevron: #C2D3DF;
+  --icon-tint: #7FA8CC;
+  --icon-inactive: #A9BFCE;
+  --home-indicator: #D3E0EA;
+
+  /* 头像渐变 */
+  --avatar-a-start: #CFE4F4;
+  --avatar-a-end: #9CC4E4;
+  --avatar-b-start: #E4EEF6;
+  --avatar-b-end: #B8CFE0;
+
+  /* 聊天气泡 */
+  --bubble-peer-bg: rgba(255, 255, 255, 0.62);
+  --bubble-mine-bg: rgba(156, 196, 228, 0.28);
+  --radius-bubble-peer: 4px 20px 20px 20px;
+  --radius-bubble-mine: 20px 4px 20px 20px;
+
+  /* 液态玻璃 */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.90);
+  --glass-border-width: 1px;
+  --blur-radius: 12px;
+  --glass-blur: blur(var(--blur-radius)) saturate(1.4);
+
+  /* 阴影 */
+  --shadow-glass: 0 10px 24px rgba(143, 186, 217, 0.20);
+  --shadow-glass-lg: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-tabbar: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-accent: 0 8px 20px rgba(143, 186, 217, 0.40);
+
+  /* 圆角 */
+  --radius-card-lg: 24px;
+  --radius-card: 22px;
+  --radius-field: 16px;
+  --radius-group: 20px;
+  --radius-pill: 22px;
+  --radius-tabbar: 24px;
+  --radius-chip: 13px;
+  --radius-avatar: 50%;
+
+  /* 尺寸 */
+  --phone-max-w: 420px;
+  --page-padding-x: 20px;
+  --tabbar-height: 70px;
+  --tabbar-margin: 20px;
+  --content-bottom-pad: calc(var(--tabbar-height) + var(--tabbar-margin) + 24px);
+  --card-height: 88px;
+  --card-gap: 12px;
+
+  /* 字体 */
+  --font-zh: "MiSans", "PingFang SC", sans-serif;
+  --font-en: "Liter", sans-serif;
+  --font-display: "Cormorant Garamond", serif;
+}
+
+/* ============================================================
+   本页样式: 其他 other.html(全部功能入口)
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+button, a {
+  font: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+
+body {
+  font-family: var(--font-zh);
+  background: #EAF2F8;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机外框(移动端占满, 桌面端居中限宽) */
+.phone {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--bg-base), var(--bg-base-end));
+}
+
+@media (min-width: 480px) {
+  body { align-items: center; padding: 24px 0; }
+  .phone {
+    min-height: 844px;
+    border-radius: 40px;
+    box-shadow: 0 24px 64px rgba(94, 123, 144, 0.25);
+  }
+}
+
+/* 背景光斑(纯装饰) */
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.blob--a { width: 430px; height: 400px; top: -110px; left: -70px;
+  background: radial-gradient(circle, var(--blob-blue) 0%, transparent 70%); }
+.blob--b { width: 360px; height: 340px; top: 300px; right: -110px;
+  background: radial-gradient(circle, var(--blob-deep) 0%, transparent 70%); }
+.blob--c { width: 320px; height: 320px; bottom: 80px; left: -60px;
+  background: radial-gradient(circle, var(--blob-cyan) 0%, transparent 70%); }
+
+/* 状态栏 */
+.status-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 0;
+  color: var(--icon-inactive);
+}
+.status-bar svg { display: block; }
+
+/* 页面主体 */
+.other {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px var(--page-padding-x) var(--content-bottom-pad);
+  overflow-y: auto;
+}
+.other__title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 34px;
+  letter-spacing: 2px;
+  line-height: 1.25;
+  color: var(--brand-deep);
+}
+
+/* 分组 */
+.other-group { display: flex; flex-direction: column; gap: 10px; }
+.other-group__title {
+  font-family: var(--font-en);
+  font-size: 10px;
+  letter-spacing: 3px;
+  color: var(--brand-muted);
+}
+
+/* 功能卡网格(2 列, 结构循环替换) */
+.other-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--card-gap);
+}
+.feature-card {
+  height: var(--card-height);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-card-lg);
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+  transition: transform 0.2s ease;
+}
+.feature-card:hover { transform: translateY(-1px); }
+.feature-card__chip {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-chip);
+  background: rgba(156, 196, 228, 0.15);
+  color: var(--icon-tint);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.feature-card__label { font-size: 14.5px; font-weight: 600; color: var(--brand-ink); }
+
+/* 底部悬浮 Tab 栏 */
+.tabbar {
+  position: fixed;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + var(--tabbar-margin));
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - var(--page-padding-x) * 2);
+  max-width: calc(var(--phone-max-w) - var(--page-padding-x) * 2);
+  height: var(--tabbar-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-evenly;
+  border-radius: var(--radius-tabbar);
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-tabbar);
+  z-index: 10;
+}
+.tabbar__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--icon-inactive);
+}
+.tabbar__item i { font-size: 19px; }
+.tabbar__item span { font-family: var(--font-en); font-size: 10px; letter-spacing: 1px; }
+.tabbar__item--active { color: var(--brand-blue); }
+</style>
+</head>
+
+<body>
+  <div class="phone" id="screen-other">
+
+    <div class="blob blob--a" aria-hidden="true"></div>
+    <div class="blob blob--b" aria-hidden="true"></div>
+    <div class="blob blob--c" aria-hidden="true"></div>
+
+    <header class="status-bar" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="currentColor"><rect x="0" y="9" width="3" height="6" rx="1"/><rect x="4" y="6" width="3" height="9" rx="1"/><rect x="8" y="3" width="3" height="12" rx="1"/><rect x="12" y="0" width="3" height="15" rx="1"/></svg>
+      <svg width="16" height="15" viewBox="0 0 16 15" fill="currentColor"><path d="M8 8.5a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4ZM8 4.9c1.5 0 2.9.6 3.9 1.6l-1.4 1.4a3.6 3.6 0 0 0-5 0L4.1 6.5A5.6 5.6 0 0 1 8 4.9Zm0-4.2c2.7 0 5.2 1.1 7 2.9l-1.4 1.4a7.8 7.8 0 0 0-11.2 0L1 3.6A9.8 9.8 0 0 1 8 .7Z"/></svg>
+      <svg width="22" height="15" viewBox="0 0 25 15" fill="none" stroke="currentColor"><rect x="0.5" y="1.5" width="20" height="12" rx="3.5"/><rect x="3" y="4" width="13" height="7" rx="1.5" fill="currentColor" stroke="none"/><path d="M23.5 5.5v4" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </header>
+
+    <main class="other" id="other-main">
+
+      <h1 class="other__title">Other</h1>
+
+      <!-- 记录 -->
+      <section class="other-group" aria-label="记录">
+        <h2 class="other-group__title">记录&nbsp;&nbsp;RECORD</h2>
+        <div class="other-grid">
+          <button class="feature-card" id="btn-album">
+            <span class="feature-card__chip"><i class="fa-solid fa-images" aria-hidden="true"></i></span>
+            <span class="feature-card__label">相册</span>
+          </button>
+          <a class="feature-card" id="btn-archive" href="archive.html">
+            <span class="feature-card__chip"><i class="fa-solid fa-address-card" aria-hidden="true"></i></span>
+            <span class="feature-card__label">档案</span>
+          </a>
+          <button class="feature-card" id="btn-account">
+            <span class="feature-card__chip"><i class="fa-solid fa-wallet" aria-hidden="true"></i></span>
+            <span class="feature-card__label">记账</span>
+          </button>
+          <button class="feature-card" id="btn-read">
+            <span class="feature-card__chip"><i class="fa-solid fa-book-open" aria-hidden="true"></i></span>
+            <span class="feature-card__label">阅读</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 生活 -->
+      <section class="other-group" aria-label="生活">
+        <h2 class="other-group__title">生活&nbsp;&nbsp;LIFE</h2>
+        <div class="other-grid">
+          <button class="feature-card" id="btn-health">
+            <span class="feature-card__chip"><i class="fa-solid fa-heart-pulse" aria-hidden="true"></i></span>
+            <span class="feature-card__label">健康</span>
+          </button>
+          <button class="feature-card" id="btn-study">
+            <span class="feature-card__chip"><i class="fa-solid fa-graduation-cap" aria-hidden="true"></i></span>
+            <span class="feature-card__label">学习</span>
+          </button>
+          <button class="feature-card" id="btn-call">
+            <span class="feature-card__chip"><i class="fa-solid fa-phone" aria-hidden="true"></i></span>
+            <span class="feature-card__label">通讯</span>
+          </button>
+          <button class="feature-card" id="btn-game">
+            <span class="feature-card__chip"><i class="fa-solid fa-gamepad" aria-hidden="true"></i></span>
+            <span class="feature-card__label">游戏</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 世界 -->
+      <section class="other-group" aria-label="世界">
+        <h2 class="other-group__title">世界&nbsp;&nbsp;WORLD</h2>
+        <div class="other-grid">
+          <a class="feature-card" id="btn-world" href="world.html">
+            <span class="feature-card__chip"><i class="fa-solid fa-earth-asia" aria-hidden="true"></i></span>
+            <span class="feature-card__label">世界</span>
+          </a>
+          <button class="feature-card" id="btn-dream">
+            <span class="feature-card__chip"><i class="fa-solid fa-moon" aria-hidden="true"></i></span>
+            <span class="feature-card__label">入梦</span>
+          </button>
+          <button class="feature-card" id="btn-mystic">
+            <span class="feature-card__chip"><i class="fa-solid fa-gem" aria-hidden="true"></i></span>
+            <span class="feature-card__label">秘境</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 娱乐 -->
+      <section class="other-group" aria-label="娱乐">
+        <h2 class="other-group__title">娱乐&nbsp;&nbsp;PLAY</h2>
+        <div class="other-grid">
+          <button class="feature-card" id="btn-movie">
+            <span class="feature-card__chip"><i class="fa-solid fa-clapperboard" aria-hidden="true"></i></span>
+            <span class="feature-card__label">观影</span>
+          </button>
+          <button class="feature-card" id="btn-shop">
+            <span class="feature-card__chip"><i class="fa-solid fa-gift" aria-hidden="true"></i></span>
+            <span class="feature-card__label">商店</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- 系统(含聊天 / 设置 / 美化 / 造物) -->
+      <section class="other-group" aria-label="系统">
+        <h2 class="other-group__title">系统&nbsp;&nbsp;SYSTEM</h2>
+        <div class="other-grid">
+          <a class="feature-card" id="btn-chat-card" href="chat.html">
+            <span class="feature-card__chip"><i class="fa-solid fa-message" aria-hidden="true"></i></span>
+            <span class="feature-card__label">聊天</span>
+          </a>
+          <a class="feature-card" id="btn-settings-card" href="settings.html">
+            <span class="feature-card__chip"><i class="fa-solid fa-gear" aria-hidden="true"></i></span>
+            <span class="feature-card__label">设置</span>
+          </a>
+          <a class="feature-card" id="btn-theme" href="theme.html">
+            <span class="feature-card__chip"><i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i></span>
+            <span class="feature-card__label">美化</span>
+          </a>
+          <button class="feature-card" id="btn-create-world">
+            <span class="feature-card__chip"><i class="fa-solid fa-hammer" aria-hidden="true"></i></span>
+            <span class="feature-card__label">造物</span>
+          </button>
+        </div>
+      </section>
+
+    </main>
+
+    <nav class="tabbar" id="tabbar" aria-label="主导航">
+      <a class="tabbar__item" id="tab-home" href="home.html"><i class="fa-solid fa-house" aria-hidden="true"></i><span>Home</span></a>
+      <a class="tabbar__item" id="tab-chat" href="chat.html"><i class="fa-solid fa-message" aria-hidden="true"></i><span>Chat</span></a>
+      <a class="tabbar__item" id="tab-settings" href="settings.html"><i class="fa-solid fa-gear" aria-hidden="true"></i><span>Settings</span></a>
+      <a class="tabbar__item tabbar__item--active" id="tab-other"><i class="fa-solid fa-grip" aria-hidden="true"></i><span>Other</span></a>
+    </nav>
+
+  </div>
+</body>
+</html>
