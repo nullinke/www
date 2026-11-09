@@ -277,11 +277,59 @@ body {
   color: var(--brand-ink);
 }
 .inputbar__field::placeholder { color: var(--brand-muted); }
+
+/* 导航上下文：列表进入聊天室时不显示 Tab 栏；底部 Chat 入口进入时显示 Tab 栏。 */
+.room-tabbar {
+  display: none;
+  position: fixed;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + var(--tabbar-margin));
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - var(--page-padding-x) * 2);
+  max-width: calc(var(--phone-max-w) - var(--page-padding-x) * 2);
+  height: var(--tabbar-height);
+  align-items: center;
+  justify-content: space-evenly;
+  border-radius: var(--radius-tabbar);
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-tabbar);
+  z-index: 10;
+}
+.room-tabbar .tabbar__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--icon-inactive);
+  text-decoration: none;
+  cursor: pointer;
+}
+.room-tabbar .tabbar__item i { font-size: 19px; }
+.room-tabbar .tabbar__item span {
+  font-family: var(--font-en);
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+.room-tabbar .tabbar__item--active { color: var(--brand-blue); }
+.phone.is-tab-mode .room-tabbar { display: flex; }
+.phone.is-tab-mode .room-nav__btn.is-context-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+.phone.is-tab-mode .inputbar {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + var(--tabbar-margin) + var(--tabbar-height) + 12px);
+}
+.phone.is-tab-mode .room-msgs {
+  padding-bottom: calc(var(--content-bottom-pad) + var(--inputbar-height) + 12px);
+}
 </style>
 </head>
 
 <body>
-  <div class="phone" id="screen-chatroom">
+  <div class="phone" id="screen-chatroom" data-nav-mode="list">
 
     <div class="blob blob--a" aria-hidden="true"></div>
     <div class="blob blob--b" aria-hidden="true"></div>
@@ -349,6 +397,22 @@ body {
       </button>
     </footer>
 
+    <nav class="tabbar room-tabbar" id="room-tabbar" aria-label="主导航">
+      <a class="tabbar__item" id="tab-home" href="home.html">
+        <i class="fa-solid fa-house" aria-hidden="true"></i><span>Home</span>
+      </a>
+      <a class="tabbar__item tabbar__item--active" id="tab-chat">
+        <i class="fa-solid fa-message" aria-hidden="true"></i><span>Chat</span>
+      </a>
+      <a class="tabbar__item" id="tab-settings" href="settings.html">
+        <i class="fa-solid fa-gear" aria-hidden="true"></i><span>Settings</span>
+      </a>
+      <a class="tabbar__item" id="tab-other" href="other.html">
+        <i class="fa-solid fa-grip" aria-hidden="true"></i><span>Other</span>
+      </a>
+    </nav>
+
   </div>
+  <script type="module" src="js/chat-app.js"></script>
 </body>
 </html>

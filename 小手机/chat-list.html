@@ -300,7 +300,7 @@ body {
       <!-- 会话列表(Mock 数据, 循环替换; 点击跳转对应聊天室) -->
       <ul class="chat-items" id="chat-items">
         <li>
-          <a class="chat-item glass" id="chat-nereus" href="chat-room.html">
+          <a class="chat-item glass" id="chat-nereus" href="chat-room.html?nav=list&conversationId=nereus">
             <div class="avatar avatar--peer"><span class="avatar__initial">N</span></div>
             <div class="chat-item__body">
               <span class="chat-item__name">Nereus</span>
@@ -313,7 +313,7 @@ body {
           </a>
         </li>
         <li>
-          <a class="chat-item glass" id="chat-momo" href="chat-room.html">
+          <a class="chat-item glass" id="chat-momo" href="chat-room.html?nav=list&conversationId=momo">
             <div class="avatar avatar--mine"><span class="avatar__initial">M</span></div>
             <div class="chat-item__body">
               <span class="chat-item__name">Momo</span>
@@ -325,7 +325,7 @@ body {
           </a>
         </li>
         <li>
-          <a class="chat-item glass" id="chat-group" href="chat-room.html">
+          <a class="chat-item glass" id="chat-group" href="chat-room.html?nav=list&conversationId=group">
             <div class="avatar avatar--group"><i class="fa-solid fa-user-group" aria-hidden="true"></i></div>
             <div class="chat-item__body">
               <span class="chat-item__name">潮汐小屋</span>
@@ -343,5 +343,6 @@ body {
     
 
   </div>
+  <script type="module" src="js/chat-app.js"></script>
 </body>
 </html>

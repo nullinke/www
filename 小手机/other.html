@@ -352,7 +352,7 @@ body {
       <section class="other-group" aria-label="系统">
         <h2 class="other-group__title">系统&nbsp;&nbsp;SYSTEM</h2>
         <div class="other-grid">
-          <a class="feature-card" id="btn-chat-card" href="chat.html">
+          <a class="feature-card" id="btn-chat-card" href="chat-list.html?from=other">
             <span class="feature-card__chip"><i class="fa-solid fa-message" aria-hidden="true"></i></span>
             <span class="feature-card__label">聊天</span>
           </a>
@@ -375,11 +375,12 @@ body {
 
     <nav class="tabbar" id="tabbar" aria-label="主导航">
       <a class="tabbar__item" id="tab-home" href="home.html"><i class="fa-solid fa-house" aria-hidden="true"></i><span>Home</span></a>
-      <a class="tabbar__item" id="tab-chat" href="chat.html"><i class="fa-solid fa-message" aria-hidden="true"></i><span>Chat</span></a>
+      <a class="tabbar__item" id="tab-chat" href="chat-room.html?nav=tab"><i class="fa-solid fa-message" aria-hidden="true"></i><span>Chat</span></a>
       <a class="tabbar__item" id="tab-settings" href="settings.html"><i class="fa-solid fa-gear" aria-hidden="true"></i><span>Settings</span></a>
       <a class="tabbar__item tabbar__item--active" id="tab-other"><i class="fa-solid fa-grip" aria-hidden="true"></i><span>Other</span></a>
     </nav>
 
   </div>
+  <script type="module" src="js/chat-app.js"></script>
 </body>
 </html>
