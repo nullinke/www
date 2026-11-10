@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Echo · 聊天</title>
+
+<!-- 字体: Cormorant Garamond(展示标题) / Liter(英文小标) / MiSans(中文) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital@1&family=Liter&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" rel="stylesheet">
+<!-- 图标: Font Awesome 6 字体图标(纯 CSS, 无 JS) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+/* ============================================================
+   Echo · 全局设计变量(所有页面单文件内保持一致的副本)
+   与 design-tokens.css 同步
+   ============================================================ */
+:root {
+  /* 颜色 */
+  --bg-base: #FDFEFF;
+  --bg-base-end: #F0F7FC;
+  --blob-blue: rgba(214, 233, 247, 0.55);
+  --blob-deep: rgba(174, 211, 236, 0.40);
+  --blob-cyan: rgba(205, 235, 240, 0.38);
+
+  --brand-blue: #9CC4E4;
+  --brand-blue-deep: #7FA8CC;
+  --brand-ink: #4E6B80;
+  --brand-deep: #5E7B90;
+  --brand-muted: #9DB4C4;
+  --line-soft: #C7D9E6;
+  --divider: #E7EFF5;
+  --track: #E2EDF5;
+  --chevron: #C2D3DF;
+  --icon-tint: #7FA8CC;
+  --icon-inactive: #A9BFCE;
+  --home-indicator: #D3E0EA;
+
+  /* 头像渐变 */
+  --avatar-a-start: #CFE4F4;           /* 对方头像(亮蓝) */
+  --avatar-a-end: #9CC4E4;
+  --avatar-b-start: #E4EEF6;           /* 我方/群聊头像(灰蓝) */
+  --avatar-b-end: #B8CFE0;
+
+  /* 聊天气泡 */
+  --bubble-peer-bg: rgba(255, 255, 255, 0.62);
+  --bubble-mine-bg: rgba(156, 196, 228, 0.28);
+  --radius-bubble-peer: 4px 20px 20px 20px;
+  --radius-bubble-mine: 20px 4px 20px 20px;
+
+  /* 液态玻璃 */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.90);
+  --glass-border-width: 1px;
+  --blur-radius: 12px;
+  --glass-blur: blur(var(--blur-radius)) saturate(1.4);
+
+  /* 阴影 */
+  --shadow-glass: 0 8px 20px rgba(143, 186, 217, 0.18);
+  --shadow-glass-lg: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-tabbar: 0 12px 28px rgba(143, 186, 217, 0.25);
+
+  /* 圆角 */
+  --radius-card-lg: 24px;
+  --radius-card: 22px;
+  --radius-pill: 22px;
+  --radius-tabbar: 24px;
+  --radius-chip: 13px;
+  --radius-avatar: 50%;
+
+  /* 尺寸 */
+  --phone-max-w: 420px;
+  --page-padding-x: 20px;
+  --tabbar-height: 70px;
+  --tabbar-margin: 20px;
+  --content-bottom-pad: calc(var(--tabbar-height) + var(--tabbar-margin) + 24px);
+  --inputbar-height: 60px;
+  --bubble-max-w: 68%;                 /* 气泡最大宽度 */
+
+  /* 字体 */
+  --font-zh: "MiSans", "PingFang SC", sans-serif;
+  --font-en: "Liter", sans-serif;
+  --font-display: "Cormorant Garamond", serif;
+}
+
+/* ============================================================
+   本页样式: 会话列表 chat-list.html
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+button, a {
+  font: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+
+body {
+  font-family: var(--font-zh);
+  background: #EAF2F8;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机外框(移动端占满, 桌面端居中限宽) */
+.phone {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;           /* 仅为背景光斑提供包含块 */
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--bg-base), var(--bg-base-end));
+}
+
+@media (min-width: 480px) {
+  body { align-items: center; padding: 24px 0; }
+  .phone {
+    min-height: 844px;
+    border-radius: 40px;
+    box-shadow: 0 24px 64px rgba(94, 123, 144, 0.25);
+  }
+}
+
+/* 背景光斑(纯装饰) */
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.blob--a { width: 430px; height: 400px; top: -110px; left: -70px;
+  background: radial-gradient(circle, var(--blob-blue) 0%, transparent 70%); }
+.blob--b { width: 360px; height: 340px; top: 320px; right: -110px;
+  background: radial-gradient(circle, var(--blob-deep) 0%, transparent 70%); }
+
+/* 状态栏 */
+.status-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 0;
+  color: var(--icon-inactive);
+}
+.status-bar svg { display: block; }
+
+/* 玻璃质感(通用类) */
+.glass {
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+
+/* 头像(通用类) */
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-avatar);
+  border: 1.5px solid rgba(255, 255, 255, 0.8);
+  color: #FFFFFF;
+  flex-shrink: 0;
+}
+.avatar--peer { background: linear-gradient(135deg, var(--avatar-a-start), var(--avatar-a-end)); }
+.avatar--mine,
+.avatar--group { background: linear-gradient(135deg, var(--avatar-b-start), var(--avatar-b-end)); }
+.avatar__initial { font-family: var(--font-display); line-height: 1; }
+
+/* 页面主体 */
+.chatlist {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 20px var(--page-padding-x) 40px;
+}
+
+/* 页首 */
+.chatlist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.chatlist-head__title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 34px;
+  letter-spacing: 2px;
+  line-height: 1.25;
+  color: var(--brand-deep);
+}
+.chatlist-head__add {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  color: var(--icon-tint);
+  font-size: 15px;
+}
+
+/* 快捷入口胶囊 */
+.chatlist-entries { display: flex; gap: 10px; }
+.entry-pill {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-ink);
+}
+.entry-pill i { color: var(--icon-tint); font-size: 14px; }
+
+/* 会话列表 */
+.chat-items {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+}
+.chat-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius-card);
+  transition: transform 0.2s ease;
+}
+.chat-item:hover { transform: translateY(-1px); }
+.chat-item .avatar { width: 48px; height: 48px; font-size: 21px; }
+.chat-item .avatar i { font-size: 19px; }
+.chat-item__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.chat-item__name { font-size: 15px; font-weight: 600; color: var(--brand-ink); }
+.chat-item__preview {
+  font-size: 12.5px;
+  color: var(--brand-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-item__meta { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.chat-item__time { font-family: var(--font-en); font-size: 11px; color: var(--brand-muted); }
+.chat-item__unread {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--brand-blue);
+}
+/* ── 我的资料卡（快捷入口上方） ── */
+.my-profile-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius-card-lg);
+  cursor: pointer;
+  transition: transform 0.18s ease;
+}
+.my-profile-card:hover { transform: translateY(-1px); }
+.my-profile-card__avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-avatar);
+  border: 1.5px solid rgba(255,255,255,0.8);
+  background: linear-gradient(135deg, var(--avatar-b-start), var(--avatar-b-end));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 20px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.my-profile-card__avatar img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  border-radius: var(--radius-avatar);
+}
+.my-profile-card__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.my-profile-card__name { font-size: 15px; font-weight: 600; color: var(--brand-ink); }
+.my-profile-card__id   { font-family: var(--font-en); font-size: 11px; color: var(--brand-muted); letter-spacing: 0.5px; }
+.my-profile-card__arrow { color: var(--chevron); font-size: 12px; flex-shrink: 0; }
+
+/* ── 底部弹层（Profile Sheet） ── */
+.profile-sheet-mask {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(78, 107, 128, 0.25);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 100;
+  align-items: flex-end;
+  justify-content: center;
+}
+.profile-sheet-mask.is-open { display: flex; }
+
+.profile-sheet {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  border-radius: 28px 28px 0 0;
+  background: rgba(253,254,255,0.96);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  border-top: 1px solid rgba(255,255,255,0.9);
+  box-shadow: 0 -8px 32px rgba(143,186,217,0.22);
+  padding: 0 0 calc(env(safe-area-inset-bottom,0px) + 24px);
+  /* 入场动画 */
+  transform: translateY(100%);
+  transition: transform 0.32s cubic-bezier(0.32,0.72,0,1);
+}
+.profile-sheet-mask.is-open .profile-sheet {
+  transform: translateY(0);
+}
+
+/* 拖动条 */
+.profile-sheet__handle {
+  width: 36px; height: 4px;
+  border-radius: 2px;
+  background: var(--line-soft);
+  margin: 12px auto 20px;
+}
+
+/* 头像区 */
+.profile-sheet__avatar-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+.profile-sheet__avatar {
+  width: 80px; height: 80px;
+  border-radius: var(--radius-avatar);
+  border: 2px solid rgba(255,255,255,0.9);
+  background: linear-gradient(135deg, var(--avatar-b-start), var(--avatar-b-end));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 28px;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+}
+.profile-sheet__avatar img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+}
+.profile-sheet__avatar-badge {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.18s;
+  border-radius: var(--radius-avatar);
+}
+.profile-sheet__avatar:hover .profile-sheet__avatar-badge { opacity: 1; }
+.profile-sheet__avatar-badge i { color: #fff; font-size: 18px; }
+.profile-sheet__avatar-hint { font-size: 11.5px; color: var(--brand-muted); }
+
+/* 表单字段 */
+.profile-sheet__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0 20px;
+  border-radius: 20px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.6);
+  border: 1px solid rgba(255,255,255,0.9);
+  box-shadow: 0 4px 16px rgba(143,186,217,0.12);
+}
+.profile-sheet__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 16px;
+}
+.profile-sheet__row + .profile-sheet__row {
+  border-top: 1px solid var(--divider);
+}
+.profile-sheet__label {
+  width: 80px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--brand-muted);
+}
+.profile-sheet__input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-zh);
+  font-size: 13.5px;
+  color: var(--brand-ink);
+}
+.profile-sheet__input::placeholder { color: var(--brand-muted); }
+.profile-sheet__input[readonly] { color: var(--brand-muted); cursor: default; }
+
+/* 朋友圈背景色选择 */
+.profile-sheet__cover-row {
+  display: flex;
+  align-items: center;
+  min-height: 60px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--divider);
+  gap: 12px;
+}
+.profile-sheet__cover-label {
+  width: 80px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--brand-muted);
+}
+.profile-sheet__cover-swatches {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cover-swatch {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.cover-swatch:hover { transform: scale(1.12); }
+.cover-swatch.is-active {
+  border-color: var(--brand-blue-deep);
+  box-shadow: 0 0 0 3px rgba(156,196,228,0.35);
+}
+
+/* 保存按钮 */
+.profile-sheet__save {
+  margin: 20px 20px 0;
+  height: 50px;
+  width: calc(100% - 40px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 25px;
+  background: linear-gradient(0deg, var(--brand-blue), var(--brand-blue-deep));
+  box-shadow: 0 8px 20px rgba(143,186,217,0.40);
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  border: none;
+  transition: opacity 0.15s;
+}
+.profile-sheet__save:active { opacity: 0.85; }
+.profile-sheet__save:disabled { opacity: 0.6; cursor: default; }
+
+
+</style>
+</head>
+
+<body>
+  <div class="phone" id="screen-chatlist">
+
+    <div class="blob blob--a" aria-hidden="true"></div>
+    <div class="blob blob--b" aria-hidden="true"></div>
+
+    <header class="status-bar" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="currentColor"><rect x="0" y="9" width="3" height="6" rx="1"/><rect x="4" y="6" width="3" height="9" rx="1"/><rect x="8" y="3" width="3" height="12" rx="1"/><rect x="12" y="0" width="3" height="15" rx="1"/></svg>
+      <svg width="16" height="15" viewBox="0 0 16 15" fill="currentColor"><path d="M8 8.5a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4ZM8 4.9c1.5 0 2.9.6 3.9 1.6l-1.4 1.4a3.6 3.6 0 0 0-5 0L4.1 6.5A5.6 5.6 0 0 1 8 4.9Zm0-4.2c2.7 0 5.2 1.1 7 2.9l-1.4 1.4a7.8 7.8 0 0 0-11.2 0L1 3.6A9.8 9.8 0 0 1 8 .7Z"/></svg>
+      <svg width="22" height="15" viewBox="0 0 25 15" fill="none" stroke="currentColor"><rect x="0.5" y="1.5" width="20" height="12" rx="3.5"/><rect x="3" y="4" width="13" height="7" rx="1.5" fill="currentColor" stroke="none"/><path d="M23.5 5.5v4" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </header>
+
+    <main class="chatlist" id="chatlist-main">
+
+      <header class="chatlist-head">
+        <a class="chatlist-head__add glass" id="btn-back" href="home.html" aria-label="返回" style="width:36px;height:36px;border-radius:12px">
+          <i class="fa-solid fa-chevron-left" aria-hidden="true" style="font-size:14px"></i>
+        </a>
+        <h1 class="chatlist-head__title" style="font-size:28px">Chat</h1>
+        <a class="chatlist-head__add glass" id="btn-new-chat" href="chat-create.html" aria-label="新建聊天">
+          <i class="fa-solid fa-plus" aria-hidden="true"></i>
+        </a>
+      </header>
+
+      <!-- 我的资料卡 -->
+      <button class="my-profile-card glass" id="btn-my-profile" aria-label="我的资料">
+        <div class="my-profile-card__avatar" id="profile-card-avatar">
+          <span id="profile-card-initial">我</span>
+        </div>
+        <div class="my-profile-card__body">
+          <span class="my-profile-card__name" id="profile-card-name">拾贝人</span>
+          <span class="my-profile-card__id"   id="profile-card-id">ECHO-0001</span>
+        </div>
+        <i class="fa-solid fa-chevron-right my-profile-card__arrow" aria-hidden="true"></i>
+      </button>
+
+      <!-- 快捷入口 -->
+      <section class="chatlist-entries" aria-label="快捷入口">
+        <a class="entry-pill glass" id="btn-moments" href="moments.html">
+          <i class="fa-solid fa-circle-nodes" aria-hidden="true"></i>朋友圈
+        </a>
+        <a class="entry-pill glass" id="btn-couple-space" href="couple-space.html">
+          <i class="fa-solid fa-heart" aria-hidden="true"></i>情侣空间
+        </a>
+      </section>
+
+      <!-- 会话列表（由 JS 动态渲染，此处保持空容器） -->
+      <ul class="chat-items" id="chat-items"></ul>
+
+    </main>
+
+    
+
+  </div>
+
+  <!-- ── 我的资料弹层 ── -->
+  <div class="profile-sheet-mask" id="profile-sheet-mask" role="dialog" aria-modal="true" aria-label="我的资料">
+    <div class="profile-sheet" id="profile-sheet">
+      <div class="profile-sheet__handle" aria-hidden="true"></div>
+
+      <!-- 头像 -->
+      <div class="profile-sheet__avatar-wrap">
+        <button class="profile-sheet__avatar" id="sheet-avatar-btn" aria-label="更换头像">
+          <span id="sheet-avatar-initial">我</span>
+          <span class="profile-sheet__avatar-badge" aria-hidden="true">
+            <i class="fa-solid fa-camera"></i>
+          </span>
+        </button>
+        <!-- 隐藏 file input -->
+        <input type="file" id="sheet-avatar-file" accept="image/*" style="display:none" aria-hidden="true">
+        <p class="profile-sheet__avatar-hint">点击更换头像</p>
+      </div>
+
+      <!-- 字段 -->
+      <div class="profile-sheet__fields">
+        <div class="profile-sheet__row">
+          <label class="profile-sheet__label" for="sheet-input-nickname">昵称</label>
+          <input class="profile-sheet__input" id="sheet-input-nickname" type="text" placeholder="输入昵称" maxlength="32">
+        </div>
+        <div class="profile-sheet__row">
+          <label class="profile-sheet__label" for="sheet-input-id">ID</label>
+          <input class="profile-sheet__input" id="sheet-input-id" type="text" placeholder="输入 ID" maxlength="32">
+        </div>
+        <div class="profile-sheet__row">
+          <label class="profile-sheet__label" for="sheet-input-bio">签名</label>
+          <input class="profile-sheet__input" id="sheet-input-bio" type="text" placeholder="一句话签名" maxlength="80">
+        </div>
+        <!-- 朋友圈背景色 -->
+        <div class="profile-sheet__cover-row">
+          <span class="profile-sheet__cover-label">朋友圈背景</span>
+          <div class="profile-sheet__cover-swatches" id="sheet-cover-swatches" role="radiogroup" aria-label="朋友圈背景色">
+            <!-- 色块由 JS 生成 -->
+          </div>
+        </div>
+      </div>
+
+      <button class="profile-sheet__save" id="sheet-save-btn">保存</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/chat-app.js?v=1794307283"></script>
+</body>
+</html>

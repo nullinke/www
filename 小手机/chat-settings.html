@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Echo · 聊天设置</title>
+
+<!-- 字体: Cormorant Garamond(展示标题) / Liter(英文小标) / MiSans(中文) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital@1&family=Liter&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" rel="stylesheet">
+<!-- 图标: Font Awesome 6 字体图标(纯 CSS, 无 JS) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+/* ============================================================
+   Echo · 全局设计变量(所有页面单文件内保持一致的副本)
+   与 design-tokens.css 同步
+   ============================================================ */
+:root {
+  /* 颜色 */
+  --bg-base: #FDFEFF;
+  --bg-base-end: #F0F7FC;
+  --blob-blue: rgba(214, 233, 247, 0.55);
+  --blob-deep: rgba(174, 211, 236, 0.40);
+  --blob-cyan: rgba(205, 235, 240, 0.38);
+
+  --brand-blue: #9CC4E4;
+  --brand-blue-deep: #7FA8CC;
+  --brand-ink: #4E6B80;
+  --brand-deep: #5E7B90;
+  --brand-muted: #9DB4C4;
+  --line-soft: #C7D9E6;
+  --divider: #E7EFF5;
+  --track: #E2EDF5;
+  --chevron: #C2D3DF;
+  --icon-tint: #7FA8CC;
+  --icon-inactive: #A9BFCE;
+  --home-indicator: #D3E0EA;
+
+  /* 头像渐变 */
+  --avatar-a-start: #CFE4F4;
+  --avatar-a-end: #9CC4E4;
+  --avatar-b-start: #E4EEF6;
+  --avatar-b-end: #B8CFE0;
+
+  /* 聊天气泡(含可选项色板) */
+  --bubble-peer-bg: rgba(255, 255, 255, 0.62);
+  --bubble-mine-bg: rgba(156, 196, 228, 0.28);
+  --radius-bubble-peer: 4px 20px 20px 20px;
+  --radius-bubble-mine: 20px 4px 20px 20px;
+  --bubble-opt-blue: rgba(156, 196, 228, 0.35);
+  --bubble-opt-cyan: rgba(168, 216, 216, 0.40);
+  --bubble-opt-ivory: rgba(237, 230, 216, 0.40);
+  --bubble-opt-lilac: rgba(197, 190, 220, 0.40);
+  --bubble-opt-rose: rgba(227, 198, 204, 0.40);
+
+  /* 液态玻璃 */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.90);
+  --glass-border-width: 1px;
+  --blur-radius: 12px;
+  --glass-blur: blur(var(--blur-radius)) saturate(1.4);
+
+  /* 阴影 */
+  --shadow-glass: 0 8px 20px rgba(143, 186, 217, 0.18);
+  --shadow-glass-lg: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-tabbar: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-accent: 0 8px 20px rgba(143, 186, 217, 0.40);
+
+  /* 圆角 */
+  --radius-card-lg: 24px;
+  --radius-card: 22px;
+  --radius-field: 16px;
+  --radius-pill: 22px;
+  --radius-tabbar: 24px;
+  --radius-chip: 13px;
+  --radius-avatar: 50%;
+
+  /* 尺寸 */
+  --phone-max-w: 420px;
+  --page-padding-x: 20px;
+  --tabbar-height: 70px;
+  --tabbar-margin: 20px;
+  --content-bottom-pad: calc(var(--tabbar-height) + var(--tabbar-margin) + 24px);
+  --inputbar-height: 60px;
+  --bubble-max-w: 68%;
+
+  /* 字体 */
+  --font-zh: "MiSans", "PingFang SC", sans-serif;
+  --font-en: "Liter", sans-serif;
+  --font-display: "Cormorant Garamond", serif;
+}
+
+/* ============================================================
+   本页样式: 聊天设置 chat-settings.html
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+button, a {
+  font: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+
+body {
+  font-family: var(--font-zh);
+  background: #EAF2F8;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机外框(移动端占满, 桌面端居中限宽) */
+.phone {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--bg-base), var(--bg-base-end));
+}
+
+@media (min-width: 480px) {
+  body { align-items: center; padding: 24px 0; }
+  .phone {
+    min-height: 844px;
+    border-radius: 40px;
+    box-shadow: 0 24px 64px rgba(94, 123, 144, 0.25);
+  }
+}
+
+/* 背景光斑(纯装饰) */
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.blob--a { width: 430px; height: 400px; top: -110px; left: -70px;
+  background: radial-gradient(circle, var(--blob-blue) 0%, transparent 70%); }
+.blob--b { width: 360px; height: 340px; top: 320px; right: -110px;
+  background: radial-gradient(circle, var(--blob-deep) 0%, transparent 70%); }
+
+/* 状态栏 */
+.status-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 0;
+  color: var(--icon-inactive);
+}
+.status-bar svg { display: block; }
+
+/* 玻璃质感(通用类) */
+.glass {
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+
+/* 头像(通用类) */
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-avatar);
+  border: 1.5px solid rgba(255, 255, 255, 0.8);
+  color: #FFFFFF;
+  flex-shrink: 0;
+}
+.avatar--peer { background: linear-gradient(135deg, var(--avatar-a-start), var(--avatar-a-end)); }
+.avatar__initial { font-family: var(--font-display); line-height: 1; }
+
+/* 子页导航 */
+.subnav {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+}
+.subnav__btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-deep);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.subnav__title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 21px;
+  letter-spacing: 1px;
+  color: var(--brand-deep);
+}
+.subnav__spacer { width: 36px; height: 36px; flex-shrink: 0; }
+
+/* 页面主体 */
+.chatset {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px var(--page-padding-x) 40px;
+  overflow-y: auto;
+}
+
+/* 角色主页 Hero 卡：头像可点击上传 */
+.char-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 20px 22px;
+  border-radius: var(--radius-card-lg);
+}
+.char-hero__avatar-wrap { position: relative; display: inline-block; }
+.char-hero__avatar {
+  width: 80px; height: 80px;
+  border-radius: var(--radius-avatar);
+  border: 2px solid rgba(255,255,255,0.9);
+  background: linear-gradient(135deg, var(--avatar-a-start), var(--avatar-a-end));
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 30px;
+  overflow: hidden; cursor: pointer;
+  position: relative;
+}
+.char-hero__avatar img { width:100%; height:100%; object-fit:cover; }
+.char-hero__avatar-badge {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.25);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity 0.18s;
+  border-radius: var(--radius-avatar);
+}
+.char-hero__avatar:hover .char-hero__avatar-badge { opacity: 1; }
+.char-hero__avatar-badge i { color: #fff; font-size: 16px; }
+.char-hero__name {
+  font-size: 22px; font-weight: 600; color: var(--brand-ink);
+  text-align: center;
+}
+.char-hero__desc {
+  font-size: 12.5px; color: var(--brand-muted);
+  text-align: center; line-height: 1.5;
+}
+
+/* 编辑字段组 */
+.edit-group {
+  display: flex; flex-direction: column;
+  border-radius: var(--radius-card-lg);
+  overflow: hidden;
+}
+.edit-row {
+  display: flex; align-items: flex-start;
+  gap: 12px; min-height: 52px;
+  padding: 14px 16px;
+}
+.edit-row + .edit-row { border-top: 1px solid var(--divider); }
+.edit-row__label {
+  width: 72px; flex-shrink: 0;
+  font-size: 13px; color: var(--brand-muted);
+  padding-top: 2px;
+}
+.edit-row__input {
+  flex: 1; border: none; outline: none; background: transparent;
+  font-family: var(--font-zh); font-size: 13.5px; color: var(--brand-ink);
+  resize: none; line-height: 1.55;
+  min-height: 24px;
+}
+.edit-row__input::placeholder { color: var(--brand-muted); }
+
+/* 分区标题 */
+.sec-label {
+  font-family: var(--font-en);
+  font-size: 10px; letter-spacing: 3px;
+  color: var(--brand-muted);
+  padding: 0 4px;
+}
+
+/* 设置行（保留给聊天外观设置） */
+.set-rows { display: flex; flex-direction: column; gap: 10px; }
+.set-row {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 50px; padding: 12px 16px;
+  border-radius: var(--radius-field); text-align: left;
+}
+.set-row__label { flex: 1; font-size: 13.5px; color: var(--brand-ink); }
+.set-row__value { font-size: 13px; color: var(--brand-muted); }
+.set-row__arrow { color: var(--chevron); font-size: 12px; flex-shrink: 0; }
+
+/* 气泡颜色卡 */
+.bubble-card {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 96px; padding: 16px;
+  border-radius: var(--radius-field);
+}
+.bubble-card__label { flex: 1; font-size: 13.5px; color: var(--brand-ink); }
+.bubble-card__dots { display: flex; gap: 10px; }
+.bubble-dot { position: relative; width: 32px; height: 32px; border-radius: 50%; }
+.bubble-dot--blue  { background: var(--bubble-opt-blue); }
+.bubble-dot--cyan  { background: var(--bubble-opt-cyan); }
+.bubble-dot--ivory { background: var(--bubble-opt-ivory); }
+.bubble-dot--lilac { background: var(--bubble-opt-lilac); }
+.bubble-dot--rose  { background: var(--bubble-opt-rose); }
+.bubble-dot--active::after {
+  content: "\f00c"; font-family: "Font Awesome 6 Free"; font-weight: 900;
+  position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 12px; color: var(--brand-deep);
+}
+
+/* 保存按钮 */
+.btn-save-char {
+  width: 100%;
+  height: 50px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 25px;
+  background: linear-gradient(0deg, var(--brand-blue), var(--brand-blue-deep));
+  box-shadow: 0 8px 20px rgba(143,186,217,0.40);
+  font-size: 15px; font-weight: 600; color: #fff;
+  cursor: pointer; border: none; transition: opacity 0.15s;
+  margin-top: 4px;
+}
+.btn-save-char:disabled { opacity: 0.6; }
+
+/* 删除角色按钮 */
+.btn-delete-char {
+  height: 50px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 25px;
+  background: transparent;
+  border: 1.5px solid rgba(220, 100, 100, 0.35);
+  font-size: 15px; font-weight: 600;
+  color: rgba(200, 80, 80, 0.75);
+  cursor: pointer; transition: opacity 0.15s, background 0.15s;
+  margin-top: 0;
+}
+.btn-delete-char:active { background: rgba(220,100,100,0.08); opacity: 0.85; }
+
+/* ── 自定义删除确认弹层 ── */
+.delete-confirm-mask {
+  display: none;
+  position: fixed; inset: 0;
+  z-index: 200;
+  background: rgba(60, 88, 108, 0.22);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  align-items: center;
+  justify-content: center;
+}
+.delete-confirm-mask.is-open { display: flex; }
+
+.delete-confirm-card {
+  width: calc(100% - 56px);
+  max-width: 320px;
+  border-radius: 24px;
+  background: rgba(253, 254, 255, 0.97);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgba(255,255,255,0.9);
+  box-shadow: 0 16px 48px rgba(100,140,170,0.22);
+  padding: 28px 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  animation: confirm-pop 0.2s cubic-bezier(0.32,0.72,0,1) both;
+}
+@keyframes confirm-pop {
+  from { opacity: 0; transform: scale(0.90); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.delete-confirm-card__icon {
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  background: rgba(220, 100, 100, 0.10);
+  display: flex; align-items: center; justify-content: center;
+  color: rgba(200,75,75,0.75);
+  font-size: 20px;
+  margin-bottom: 2px;
+}
+.delete-confirm-card__title {
+  font-size: 16px; font-weight: 600;
+  color: var(--brand-ink);
+  text-align: center;
+}
+.delete-confirm-card__desc {
+  font-size: 13px; color: var(--brand-muted);
+  text-align: center; line-height: 1.6;
+}
+.delete-confirm-card__btns {
+  display: flex; gap: 10px;
+  width: 100%; margin-top: 8px;
+}
+.delete-confirm-card__btn {
+  flex: 1; height: 46px;
+  border-radius: 23px;
+  border: none; cursor: pointer;
+  font-size: 14.5px; font-weight: 600;
+  transition: opacity 0.15s;
+}
+.delete-confirm-card__btn:active { opacity: 0.8; }
+.delete-confirm-card__btn--cancel {
+  background: rgba(199,217,230,0.30);
+  color: var(--brand-deep);
+}
+.delete-confirm-card__btn--danger {
+  background: linear-gradient(0deg, rgba(210,85,85,0.85), rgba(195,65,65,0.80));
+  box-shadow: 0 6px 18px rgba(200,80,80,0.22);
+  color: #fff;
+}
+
+/* ── 通用底部弹层（世界书选择 / 聊天样式） ── */
+.cs-mask {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(78, 107, 128, 0.22);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 100;
+  align-items: flex-end;
+  justify-content: center;
+}
+.cs-mask.is-open { display: flex; }
+.cs-sheet {
+  width: 100%; max-width: var(--phone-max-w);
+  border-radius: 28px 28px 0 0;
+  background: rgba(253,254,255,0.97);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  border-top: 1px solid rgba(255,255,255,0.9);
+  box-shadow: 0 -8px 32px rgba(143,186,217,0.22);
+  padding: 0 0 calc(env(safe-area-inset-bottom,0px) + 24px);
+  transform: translateY(100%);
+  transition: transform 0.32s cubic-bezier(0.32,0.72,0,1);
+  max-height: 80dvh;
+  overflow-y: auto;
+}
+.cs-mask.is-open .cs-sheet { transform: translateY(0); }
+.cs-sheet__handle {
+  width: 36px; height: 4px; border-radius: 2px;
+  background: var(--line-soft);
+  margin: 12px auto 16px;
+}
+.cs-sheet__head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px 14px;
+  border-bottom: 1px solid var(--divider);
+  position: sticky; top: 0;
+  background: rgba(253,254,255,0.97);
+  z-index: 1;
+}
+.cs-sheet__title {
+  font-family: var(--font-display); font-style: italic;
+  font-size: 18px; letter-spacing: 1px; color: var(--brand-deep);
+}
+.cs-sheet__close {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: rgba(199,217,230,0.25);
+  color: var(--brand-muted); font-size: 13px;
+  border: none; cursor: pointer;
+}
+.cs-sheet__body { padding: 12px 20px 0; }
+.cs-sheet__body--padded { padding: 16px 20px 0; display: flex; flex-direction: column; gap: 8px; }
+
+/* 世界书选项行 */
+.world-option {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  cursor: pointer; border: none; background: none;
+  width: 100%; text-align: left;
+  transition: background 0.15s;
+}
+.world-option:hover { background: rgba(156,196,228,0.08); }
+.world-option + .world-option { border-top: 1px solid var(--divider); }
+.world-option__chip {
+  width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--avatar-a-start), var(--avatar-a-end));
+  color: #fff; font-size: 16px;
+}
+.world-option__body { flex: 1; min-width: 0; }
+.world-option__name { font-size: 14px; font-weight: 600; color: var(--brand-ink); }
+.world-option__meta { font-size: 11.5px; color: var(--brand-muted); margin-top: 2px; }
+.world-option__check { color: var(--brand-blue); font-size: 14px; flex-shrink: 0; }
+.world-option--none .world-option__chip {
+  background: linear-gradient(135deg, var(--avatar-b-start), var(--avatar-b-end));
+}
+
+/* 聊天样式弹层内的小标题 */
+.cs-sec-label {
+  font-family: var(--font-en); font-size: 10px; letter-spacing: 3px;
+  color: var(--brand-muted); padding: 0 4px;
+}
+</style>
+</head>
+
+<body>
+  <div class="phone" id="screen-chatset">
+
+    <div class="blob blob--a" aria-hidden="true"></div>
+    <div class="blob blob--b" aria-hidden="true"></div>
+
+    <header class="status-bar" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="currentColor"><rect x="0" y="9" width="3" height="6" rx="1"/><rect x="4" y="6" width="3" height="9" rx="1"/><rect x="8" y="3" width="3" height="12" rx="1"/><rect x="12" y="0" width="3" height="15" rx="1"/></svg>
+      <svg width="16" height="15" viewBox="0 0 16 15" fill="currentColor"><path d="M8 8.5a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4ZM8 4.9c1.5 0 2.9.6 3.9 1.6l-1.4 1.4a3.6 3.6 0 0 0-5 0L4.1 6.5A5.6 5.6 0 0 1 8 4.9Zm0-4.2c2.7 0 5.2 1.1 7 2.9l-1.4 1.4a7.8 7.8 0 0 0-11.2 0L1 3.6A9.8 9.8 0 0 1 8 .7Z"/></svg>
+      <svg width="22" height="15" viewBox="0 0 25 15" fill="none" stroke="currentColor"><rect x="0.5" y="1.5" width="20" height="12" rx="3.5"/><rect x="3" y="4" width="13" height="7" rx="1.5" fill="currentColor" stroke="none"/><path d="M23.5 5.5v4" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </header>
+
+    <!-- 子页导航：标题动态显示角色名 -->
+    <header class="subnav" id="subnav">
+      <a class="subnav__btn" id="btn-back" href="chat-room.html" aria-label="返回">
+        <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+      </a>
+      <h1 class="subnav__title" id="subnav-title">角色主页</h1>
+      <div class="subnav__spacer" aria-hidden="true"></div>
+    </header>
+
+    <main class="chatset" id="chatset-main">
+
+      <!-- ── 单人角色区块（群聊时隐藏）── -->
+      <div id="single-char-section">
+
+      <!-- Hero：头像（可上传）+ 名字 + 备注描述 -->
+      <section class="char-hero glass" id="char-hero">
+        <button class="char-hero__avatar" id="char-avatar-btn" aria-label="更换头像">
+          <span id="char-avatar-initial">N</span>
+          <span class="char-hero__avatar-badge" aria-hidden="true">
+            <i class="fa-solid fa-camera"></i>
+          </span>
+        </button>
+        <input type="file" id="char-avatar-file" accept="image/*" style="display:none" aria-hidden="true">
+        <p class="char-hero__name" id="char-name">Nereus</p>
+        <!-- 备注：显示在名字下方，编辑字段中修改 -->
+        <p class="char-hero__desc" id="char-alias">海边的守灯人</p>
+      </section>
+
+      <!-- 角色信息编辑 -->
+      <p class="sec-label">角色信息&nbsp;&nbsp;CHARACTER</p>
+      <div class="edit-group glass" id="char-edit-group">
+        <div class="edit-row">
+          <label class="edit-row__label" for="char-input-name">名字</label>
+          <input class="edit-row__input" id="char-input-name" type="text" placeholder="角色名字" maxlength="32">
+        </div>
+        <div class="edit-row">
+          <label class="edit-row__label" for="char-input-alias">备注</label>
+          <input class="edit-row__input" id="char-input-alias" type="text" placeholder="显示在名字下方的描述" maxlength="60">
+        </div>
+        <div class="edit-row" style="align-items:flex-start">
+          <label class="edit-row__label" for="char-input-persona" style="padding-top:2px">角色设定</label>
+          <textarea class="edit-row__input" id="char-input-persona" rows="4" placeholder="角色的性格、背景、说话方式…" maxlength="2000"></textarea>
+        </div>
+      </div>
+
+      <!-- 聊天外观设置 -->
+      <p class="sec-label">聊天外观&nbsp;&nbsp;APPEARANCE</p>
+      <section class="set-rows" id="set-rows" aria-label="聊天外观">
+        <button class="set-row glass" id="btn-bind-world">
+          <span class="set-row__label">绑定世界书</span>
+          <span class="set-row__value" id="val-world">未绑定</span>
+          <i class="fa-solid fa-chevron-right set-row__arrow" aria-hidden="true"></i>
+        </button>
+        <button class="set-row glass" id="btn-chat-style">
+          <span class="set-row__label">聊天样式</span>
+          <span class="set-row__value">背景 · 气泡颜色</span>
+          <i class="fa-solid fa-chevron-right set-row__arrow" aria-hidden="true"></i>
+        </button>
+      </section>
+
+      <!-- 保存 -->
+      <button class="btn-save-char" id="btn-save-char">保存</button>
+
+      </div><!-- /single-char-section -->
+
+      <!-- ── 群聊设置区块（单人角色时隐藏）── -->
+      <div id="group-chat-section" style="display:none;flex-direction:column;gap:14px">
+
+        <!-- 群信息 Hero -->
+        <section class="char-hero glass" id="group-hero">
+          <div class="char-hero__avatar" id="group-hero-avatar" style="cursor:default;background:linear-gradient(135deg,var(--avatar-b-start),var(--avatar-b-end))">
+            <i class="fa-solid fa-user-group" style="font-size:28px"></i>
+          </div>
+          <p class="char-hero__name" id="group-hero-name">群聊</p>
+          <p class="char-hero__desc" id="group-hero-count">0 位成员</p>
+        </section>
+
+        <!-- 群名编辑 -->
+        <p class="sec-label">群聊名称&nbsp;&nbsp;GROUP NAME</p>
+        <div class="edit-group glass">
+          <div class="edit-row">
+            <label class="edit-row__label" for="group-input-name">群名</label>
+            <input class="edit-row__input" id="group-input-name" type="text" placeholder="群聊名称" maxlength="32">
+          </div>
+        </div>
+
+        <!-- 成员列表 -->
+        <p class="sec-label">群成员&nbsp;&nbsp;MEMBERS</p>
+        <div class="edit-group glass" id="group-members-list">
+          <!-- 由 JS 生成 -->
+        </div>
+
+        <!-- 保存群名 -->
+        <button class="btn-save-char" id="btn-save-group">保存群名</button>
+
+      </div><!-- /group-chat-section -->
+
+      <!-- 删除角色 / 解散群聊 -->
+      <button class="btn-delete-char" id="btn-delete-char">删除角色</button>
+
+    </main>
+
+  </div>
+
+  <!-- 删除确认弹层 -->
+  <div class="delete-confirm-mask" id="delete-confirm-mask">
+    <div class="delete-confirm-card" id="delete-confirm-card">
+      <div class="delete-confirm-card__icon">
+        <i class="fa-solid fa-trash" aria-hidden="true"></i>
+      </div>
+      <p class="delete-confirm-card__title" id="delete-confirm-title">删除角色</p>
+      <p class="delete-confirm-card__desc">删除后对话记录也会一并清除，无法恢复。</p>
+      <div class="delete-confirm-card__btns">
+        <button class="delete-confirm-card__btn delete-confirm-card__btn--cancel" id="delete-confirm-cancel">取消</button>
+        <button class="delete-confirm-card__btn delete-confirm-card__btn--danger" id="delete-confirm-ok">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 世界书选择弹层 -->
+  <div class="cs-mask" id="world-select-mask" role="dialog" aria-modal="true" aria-label="绑定世界书">
+    <div class="cs-sheet" id="world-select-sheet">
+      <div class="cs-sheet__handle" aria-hidden="true"></div>
+      <div class="cs-sheet__head">
+        <span class="cs-sheet__title">Bind Worldbook</span>
+        <button class="cs-sheet__close" id="world-select-close" aria-label="关闭">
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="cs-sheet__body" id="world-select-list">
+        <!-- 由 JS 生成 -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 聊天样式弹层（背景 + 气泡颜色） -->
+  <div class="cs-mask" id="style-sheet-mask" role="dialog" aria-modal="true" aria-label="聊天样式">
+    <div class="cs-sheet" id="style-sheet">
+      <div class="cs-sheet__handle" aria-hidden="true"></div>
+      <div class="cs-sheet__head">
+        <span class="cs-sheet__title">Chat Style</span>
+        <button class="cs-sheet__close" id="style-sheet-close" aria-label="关闭">
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="cs-sheet__body cs-sheet__body--padded">
+        <!-- 我的气泡颜色 -->
+        <p class="cs-sec-label">我的气泡&nbsp;&nbsp;MINE</p>
+        <div class="bubble-card glass" id="bubble-color-card" style="border-radius:16px">
+          <div class="bubble-card__dots" role="radiogroup" aria-label="我的气泡颜色">
+            <button class="bubble-dot bubble-dot--blue bubble-dot--active" id="bubble-blue" aria-label="蓝色" aria-checked="true" role="radio"></button>
+            <button class="bubble-dot bubble-dot--cyan"  id="bubble-cyan"  aria-label="青色" role="radio"></button>
+            <button class="bubble-dot bubble-dot--ivory" id="bubble-ivory" aria-label="米色" role="radio"></button>
+            <button class="bubble-dot bubble-dot--lilac" id="bubble-lilac" aria-label="紫色" role="radio"></button>
+            <button class="bubble-dot bubble-dot--rose"  id="bubble-rose"  aria-label="粉色" role="radio"></button>
+          </div>
+        </div>
+        <!-- 角色气泡颜色 -->
+        <p class="cs-sec-label" style="margin-top:16px">角色气泡&nbsp;&nbsp;PEER</p>
+        <div class="bubble-card glass" id="peer-bubble-color-card" style="border-radius:16px">
+          <div class="bubble-card__dots" role="radiogroup" aria-label="角色气泡颜色">
+            <button class="peer-bubble-dot peer-bubble-dot--default peer-bubble-dot--active" id="peer-bubble-default" aria-label="默认" aria-checked="true" role="radio"
+              style="position:relative;width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,0.62);"></button>
+            <button class="peer-bubble-dot" id="peer-bubble-blue" aria-label="蓝" role="radio"
+              style="position:relative;width:32px;height:32px;border-radius:50%;background:rgba(156,196,228,0.35);"></button>
+            <button class="peer-bubble-dot" id="peer-bubble-green" aria-label="绿" role="radio"
+              style="position:relative;width:32px;height:32px;border-radius:50%;background:rgba(168,216,190,0.45);"></button>
+            <button class="peer-bubble-dot" id="peer-bubble-sand" aria-label="沙" role="radio"
+              style="position:relative;width:32px;height:32px;border-radius:50%;background:rgba(220,210,195,0.50);"></button>
+            <button class="peer-bubble-dot" id="peer-bubble-lavender" aria-label="薰衣草" role="radio"
+              style="position:relative;width:32px;height:32px;border-radius:50%;background:rgba(197,190,220,0.40);"></button>
+          </div>
+        </div>
+        <!-- 聊天背景占位 -->
+        <p class="cs-sec-label" style="margin-top:16px">聊天背景&nbsp;&nbsp;BACKGROUND</p>
+        <button class="set-row glass" id="btn-chat-bg" style="border-radius:16px">
+          <span class="set-row__label">背景图片</span>
+          <span class="set-row__value">默认</span>
+          <i class="fa-solid fa-chevron-right set-row__arrow" aria-hidden="true"></i>
+        </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/chat-app.js?v=1794307283"></script>
+</body>
+</html>

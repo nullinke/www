@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Echo · 朋友圈</title>
+
+<!-- 字体: Cormorant Garamond(展示标题) / Liter(英文小标) / MiSans(中文) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital@1&family=Liter&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-Regular.min.css" rel="stylesheet">
+<!-- 图标: Font Awesome 6 字体图标(纯 CSS, 无 JS) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+/* ============================================================
+   Echo · 全局设计变量(所有页面单文件内保持一致的副本)
+   与 design-tokens.css 同步
+   ============================================================ */
+:root {
+  /* 颜色 */
+  --bg-base: #FDFEFF;
+  --bg-base-end: #F0F7FC;
+  --blob-blue: rgba(214, 233, 247, 0.55);
+  --blob-deep: rgba(174, 211, 236, 0.40);
+  --blob-cyan: rgba(205, 235, 240, 0.38);
+
+  --brand-blue: #9CC4E4;
+  --brand-blue-deep: #7FA8CC;
+  --brand-ink: #4E6B80;
+  --brand-deep: #5E7B90;
+  --brand-muted: #9DB4C4;
+  --line-soft: #C7D9E6;
+  --divider: #E7EFF5;
+  --track: #E2EDF5;
+  --chevron: #C2D3DF;
+  --icon-tint: #7FA8CC;
+  --icon-inactive: #A9BFCE;
+  --home-indicator: #D3E0EA;
+
+  /* 头像渐变 */
+  --avatar-a-start: #CFE4F4;
+  --avatar-a-end: #9CC4E4;
+  --avatar-b-start: #E4EEF6;
+  --avatar-b-end: #B8CFE0;
+
+  /* 聊天气泡 */
+  --bubble-peer-bg: rgba(255, 255, 255, 0.62);
+  --bubble-mine-bg: rgba(156, 196, 228, 0.28);
+  --radius-bubble-peer: 4px 20px 20px 20px;
+  --radius-bubble-mine: 20px 4px 20px 20px;
+
+  /* 液态玻璃 */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.90);
+  --glass-border-width: 1px;
+  --blur-radius: 12px;
+  --glass-blur: blur(var(--blur-radius)) saturate(1.4);
+
+  /* 阴影 */
+  --shadow-glass: 0 8px 20px rgba(143, 186, 217, 0.18);
+  --shadow-glass-lg: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-tabbar: 0 12px 28px rgba(143, 186, 217, 0.25);
+  --shadow-accent: 0 8px 20px rgba(143, 186, 217, 0.40);
+
+  /* 圆角 */
+  --radius-card-lg: 24px;
+  --radius-card: 22px;
+  --radius-field: 16px;
+  --radius-pill: 22px;
+  --radius-tabbar: 24px;
+  --radius-chip: 13px;
+  --radius-avatar: 50%;
+
+  /* 尺寸 */
+  --phone-max-w: 420px;
+  --page-padding-x: 20px;
+  --tabbar-height: 70px;
+  --tabbar-margin: 20px;
+  --content-bottom-pad: calc(var(--tabbar-height) + var(--tabbar-margin) + 24px);
+  --inputbar-height: 60px;
+  --bubble-max-w: 68%;
+
+  /* 朋友圈封面 */
+  --cover-start: #CFE4F4;
+  --cover-end: #8FB4D0;
+  --cover-height: 210px;
+
+  /* 字体 */
+  --font-zh: "MiSans", "PingFang SC", sans-serif;
+  --font-en: "Liter", sans-serif;
+  --font-display: "Cormorant Garamond", serif;
+}
+
+/* ============================================================
+   本页样式: 朋友圈 moments.html
+   ============================================================ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+button, a {
+  font: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+
+body {
+  font-family: var(--font-zh);
+  background: #EAF2F8;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机外框(移动端占满, 桌面端居中限宽) */
+.phone {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--bg-base), var(--bg-base-end));
+}
+
+@media (min-width: 480px) {
+  body { align-items: center; padding: 24px 0; }
+  .phone {
+    min-height: 844px;
+    border-radius: 40px;
+    box-shadow: 0 24px 64px rgba(94, 123, 144, 0.25);
+  }
+}
+
+/* 玻璃质感(通用类) */
+.glass {
+  background: var(--glass-bg);
+  border: var(--glass-border-width) solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+
+/* 头像(通用类) */
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-avatar);
+  border: 1.5px solid rgba(255, 255, 255, 0.8);
+  color: #FFFFFF;
+  flex-shrink: 0;
+}
+.avatar--peer { background: linear-gradient(135deg, var(--avatar-a-start), var(--avatar-a-end)); }
+.avatar--mine { background: linear-gradient(135deg, var(--avatar-b-start), var(--avatar-b-end)); }
+.avatar__initial { font-family: var(--font-display); line-height: 1; }
+
+/* ---------- 封面 ---------- */
+.cover {
+  position: relative;
+  height: calc(env(safe-area-inset-top, 0px) + var(--cover-height));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, var(--cover-start), var(--cover-end));
+  overflow: hidden;
+  flex-shrink: 0;
+}
+/* 封面图片层（有图时覆盖渐变） */
+.cover__img {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: none;
+}
+.cover__img.is-loaded { display: block; }
+/* 封面装饰环 + 粒子(无图时显示) */
+.cover__deco-ring,
+.cover__deco-dot {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.cover__deco-ring {
+  width: 180px; height: 180px;
+  top: -60px; right: -40px;
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+}
+.cover__deco-dot {
+  width: 10px; height: 10px;
+  top: 46px; right: 96px;
+  background: radial-gradient(circle at 38% 35%, #FFFFFF, var(--brand-blue));
+  box-shadow: 0 2px 8px rgba(255, 255, 255, 0.6);
+}
+/* 状态栏(叠加在封面上) */
+.status-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) 24px 0;
+  color: rgba(255, 255, 255, 0.85);
+}
+.status-bar svg { display: block; }
+
+/* 返回按钮 */
+.cover__back {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 56px);
+  left: 16px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #FFFFFF;
+  font-size: 15px;
+  z-index: 2;
+}
+
+/* 封面标题 */
+.cover__titles {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+}
+.cover__title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 34px;
+  letter-spacing: 3px;
+  color: #FFFFFF;
+}
+.cover__subtitle {
+  font-family: var(--font-en);
+  font-size: 9.5px;
+  letter-spacing: 3.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* ---------- 内容流 ---------- */
+.feed {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0 var(--page-padding-x) 40px;
+}
+
+/* 我的头像(压在封面下缘) */
+.feed__me {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -30px;            /* 上移压住封面 */
+  position: relative;
+  z-index: 2;
+}
+.feed__me .avatar { width: 60px; height: 60px; font-size: 24px; border-width: 2px; }
+
+/* 发布框 */
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  padding: 0 16px;
+  border-radius: var(--radius-card-lg);
+  color: var(--brand-muted);
+  font-size: 13px;
+  text-align: left;
+}
+.composer i { color: var(--icon-tint); font-size: 16px; margin-left: auto; }
+
+/* 动态卡片 */
+.post {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-card-lg);
+}
+.post .avatar { width: 44px; height: 44px; font-size: 19px; }
+.post__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.post__head { display: flex; align-items: baseline; gap: 8px; }
+.post__name { font-size: 14px; font-weight: 600; color: var(--brand-ink); }
+.post__time { font-family: var(--font-en); font-size: 10.5px; color: var(--brand-muted); margin-left: auto; }
+.post__text { font-size: 13.5px; line-height: 1.6; color: var(--brand-ink); }
+
+/* 图片网格(占位渐变, 换真实图片时替换 background) */
+.post__images {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.post__img {
+  aspect-ratio: 1;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--avatar-a-start), var(--avatar-a-end));
+}
+.post__img:nth-child(2) { background: linear-gradient(135deg, #DDEAF4, #AFCBDF); }
+.post__img:nth-child(3) { background: linear-gradient(135deg, #E6F0F7, #BCD6E8); }
+
+/* 操作区: 点赞 + 评论图标固定在右下角 */
+.post__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+.post__action {
+  color: var(--icon-inactive);
+  font-size: 15px;
+  transition: color 0.2s ease;
+}
+.post__action--liked { color: var(--brand-blue); }
+
+/* ---------- 发布弹层 ---------- */
+.compose-mask {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(78, 107, 128, 0.22);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 100;
+  align-items: flex-end;
+  justify-content: center;
+}
+.compose-mask.is-open { display: flex; }
+
+.compose-sheet {
+  width: 100%;
+  max-width: var(--phone-max-w);
+  border-radius: 28px 28px 0 0;
+  background: rgba(253, 254, 255, 0.97);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  border-top: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 -8px 32px rgba(143, 186, 217, 0.22);
+  padding: 0 0 calc(env(safe-area-inset-bottom, 0px) + 24px);
+  transform: translateY(100%);
+  transition: transform 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.compose-mask.is-open .compose-sheet { transform: translateY(0); }
+
+.compose-sheet__handle {
+  width: 36px; height: 4px;
+  border-radius: 2px;
+  background: var(--line-soft);
+  margin: 12px auto 16px;
+}
+
+.compose-sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px 14px;
+  border-bottom: 1px solid var(--divider);
+}
+.compose-sheet__title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 18px;
+  letter-spacing: 1px;
+  color: var(--brand-deep);
+}
+.compose-sheet__close {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: rgba(199, 217, 230, 0.25);
+  color: var(--brand-muted);
+  font-size: 13px;
+  border: none; cursor: pointer;
+}
+
+.compose-sheet__body {
+  padding: 16px 20px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.compose-sheet__textarea {
+  width: 100%;
+  min-height: 110px;
+  border: none;
+  outline: none;
+  background: rgba(156, 196, 228, 0.06);
+  border-radius: 16px;
+  padding: 14px 16px;
+  font-family: var(--font-zh);
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--brand-ink);
+  resize: none;
+}
+.compose-sheet__textarea::placeholder { color: var(--brand-muted); }
+
+.compose-sheet__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.compose-sheet__icon-btn {
+  width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 12px;
+  background: rgba(156, 196, 228, 0.12);
+  color: var(--icon-tint);
+  font-size: 15px;
+  border: none; cursor: pointer;
+  flex-shrink: 0;
+}
+.compose-sheet__submit {
+  margin-left: auto;
+  height: 40px;
+  padding: 0 22px;
+  border-radius: 20px;
+  background: linear-gradient(0deg, var(--brand-blue), var(--brand-blue-deep));
+  box-shadow: 0 6px 16px rgba(143, 186, 217, 0.38);
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  border: none; cursor: pointer;
+  transition: opacity 0.15s;
+}
+.compose-sheet__submit:disabled { opacity: 0.5; cursor: default; }
+.compose-sheet__submit:active   { opacity: 0.85; }
+</style>
+</head>
+
+<body>
+  <div class="phone" id="screen-moments">
+
+    <!-- 封面 -->
+    <header class="cover" id="cover">
+      <!-- 封面图片（有图时显示，否则显示默认渐变+装饰） -->
+      <img class="cover__img" id="cover-img" src="" alt="朋友圈封面" aria-hidden="true">
+      <!-- 无图时的装饰元素 -->
+      <span class="cover__deco-ring" aria-hidden="true"></span>
+      <span class="cover__deco-dot"  aria-hidden="true"></span>
+
+      <div class="status-bar" aria-hidden="true">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="currentColor"><rect x="0" y="9" width="3" height="6" rx="1"/><rect x="4" y="6" width="3" height="9" rx="1"/><rect x="8" y="3" width="3" height="12" rx="1"/><rect x="12" y="0" width="3" height="15" rx="1"/></svg>
+        <svg width="16" height="15" viewBox="0 0 16 15" fill="currentColor"><path d="M8 8.5a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4ZM8 4.9c1.5 0 2.9.6 3.9 1.6l-1.4 1.4a3.6 3.6 0 0 0-5 0L4.1 6.5A5.6 5.6 0 0 1 8 4.9Zm0-4.2c2.7 0 5.2 1.1 7 2.9l-1.4 1.4a7.8 7.8 0 0 0-11.2 0L1 3.6A9.8 9.8 0 0 1 8 .7Z"/></svg>
+        <svg width="22" height="15" viewBox="0 0 25 15" fill="none" stroke="currentColor"><rect x="0.5" y="1.5" width="20" height="12" rx="3.5"/><rect x="3" y="4" width="13" height="7" rx="1.5" fill="currentColor" stroke="none"/><path d="M23.5 5.5v4" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <a class="cover__back" id="btn-back" href="chat-list.html" aria-label="返回">
+        <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+      </a>
+      <div class="cover__titles">
+        <h1 class="cover__title">Moments</h1>
+        <p class="cover__subtitle">Quiet Pieces of Days</p>
+      </div>
+
+      <!-- 更换封面入口已移至「我的资料」弹层，此处不再重复放置 -->
+    </header>
+
+    <main class="feed" id="feed">
+
+      <!-- 我的头像（同步 profile） -->
+      <div class="feed__me">
+        <div class="avatar avatar--mine" id="moments-my-avatar">
+          <span class="avatar__initial" id="moments-my-initial">我</span>
+        </div>
+      </div>
+
+      <!-- 发布框 -->
+      <button class="composer glass" id="btn-composer">
+        分享此刻…
+        <i class="fa-regular fa-image" aria-hidden="true"></i>
+      </button>
+
+      <!-- 动态列表 -->
+      <section id="post-list" aria-label="动态列表">
+
+        <article class="post glass" id="post-nereus">
+          <div class="avatar avatar--peer"><span class="avatar__initial">N</span></div>
+          <div class="post__body">
+            <div class="post__head">
+              <span class="post__name">Nereus</span>
+              <span class="post__time">21:32</span>
+            </div>
+            <p class="post__text">今晚的灯塔亮得早一些，海面安静得像睡着了。</p>
+            <div class="post__foot">
+              <button class="post__action post__action--liked" id="like-nereus" aria-label="喜欢">
+                <i class="fa-solid fa-heart" aria-hidden="true"></i>
+              </button>
+              <button class="post__action" id="comment-nereus" aria-label="评论">
+                <i class="fa-regular fa-comment" aria-hidden="true"></i>
+              </button>
+            </div>
+          </div>
+        </article>
+
+        <div style="height:16px"></div>
+
+        <article class="post glass" id="post-momo">
+          <div class="avatar avatar--peer"><span class="avatar__initial">M</span></div>
+          <div class="post__body">
+            <div class="post__head">
+              <span class="post__name">Momo</span>
+              <span class="post__time">18:05</span>
+            </div>
+            <p class="post__text">唱片行淘到三张宝，封面就先赢了。</p>
+            <div class="post__images" aria-hidden="true">
+              <div class="post__img"></div>
+              <div class="post__img"></div>
+              <div class="post__img"></div>
+            </div>
+            <div class="post__foot">
+              <button class="post__action" id="like-momo" aria-label="喜欢">
+                <i class="fa-regular fa-heart" aria-hidden="true"></i>
+              </button>
+              <button class="post__action" id="comment-momo" aria-label="评论">
+                <i class="fa-regular fa-comment" aria-hidden="true"></i>
+              </button>
+            </div>
+          </div>
+        </article>
+
+      </section>
+
+    </main>
+
+  </div>
+
+  <!-- 发布弹层 -->
+  <div class="compose-mask" id="compose-mask" role="dialog" aria-modal="true" aria-label="分享此刻">
+    <div class="compose-sheet" id="compose-sheet">
+      <div class="compose-sheet__handle" aria-hidden="true"></div>
+      <div class="compose-sheet__head">
+        <span class="compose-sheet__title">Share a Moment</span>
+        <button class="compose-sheet__close" id="compose-close" aria-label="关闭">
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="compose-sheet__body">
+        <textarea
+          class="compose-sheet__textarea"
+          id="compose-textarea"
+          placeholder="分享此刻的心情…"
+          maxlength="500"
+        ></textarea>
+        <div class="compose-sheet__actions">
+          <button class="compose-sheet__icon-btn" id="compose-emoji" aria-label="表情" title="即将支持">
+            <i class="fa-regular fa-face-smile" aria-hidden="true"></i>
+          </button>
+          <button class="compose-sheet__submit" id="compose-submit">发布</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/chat-app.js?v=1794307283"></script>
+</body>
+</html>
