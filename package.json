@@ -1,4 +1,7 @@
 {
-  "name": "my-phone-app",
-  "version": "1.0.0"
+  "name": "my-phone",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "npx -y servor 小手机 --reload"
+  }
 }
