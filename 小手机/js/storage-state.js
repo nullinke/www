@@ -1,165 +1,119 @@
-/** Shared persistence boundary. Failed writes never publish success or prune data. */
-export class StorageError extends Error {
-  constructor(message, cause) {
-    super(message, { cause });
-    this.name = 'StorageError';
-  }
-}
+import {
+  StorageError, isBusinessKey, cachedRecord, hydrate, mutateRecord,
+  exportBusiness, database, transact, importBusiness, verifyImport, requestResult,
+} from './database-state.js';
+export { StorageError, safeImage, initializeStorage, closeStorage } from './database-state.js';
 
 export function readJson(key, fallback) {
+  if (isBusinessKey(key)) return cachedRecord(key, fallback);
   let raw;
-  try { raw = window.localStorage.getItem(key); }
-  catch (error) { throw new StorageError('无法读取本地数据，请检查浏览器存储权限。', error); }
-  if (raw === null) return typeof fallback === 'function' ? fallback() : fallback;
+  try { raw = localStorage.getItem(key); }
+  catch (error) { throw new StorageError('无法读取本地设置，请检查存储权限。', error); }
+  if (raw === null) return typeof fallback === 'function' ? fallback() : structuredClone(fallback);
   try { return JSON.parse(raw); }
-  catch (error) { throw new StorageError(`本地数据损坏（${key}），已保留原始内容，请先备份后恢复。`, error); }
+  catch (error) { throw new StorageError(`本地设置损坏（${key}），原始内容已保留。`, error); }
 }
-
 export function writeJson(key, value, eventName) {
-  try { window.localStorage.setItem(key, JSON.stringify(value)); }
-  catch (error) {
-    throw new StorageError('保存失败，原有数据未被截断。请先备份并释放存储空间，或检查存储权限。', error);
-  }
+  if (isBusinessKey(key)) return mutateRecord(key, null, () => value);
+  try { localStorage.setItem(key, JSON.stringify(value)); }
+  catch (error) { throw new StorageError('设置保存失败，原有数据已保留。', error); }
   if (eventName) window.dispatchEvent(new CustomEvent(eventName));
   return value;
 }
-
+export function writeImageRecord(key, value) { return mutateRecord(key, null, () => value); }
+export function hydrateImages(value) { return hydrate(value); }
 export function subscribe(key, eventName, handler, load) {
   const custom = () => handler(load());
-  const storage = (event) => { if (event.key === key || event.key === null) custom(); };
-  window.addEventListener(eventName, custom);
-  window.addEventListener('storage', storage);
-  return () => {
-    window.removeEventListener(eventName, custom);
-    window.removeEventListener('storage', storage);
-  };
+  const storage = event => { if (!isBusinessKey(key) && (event.key === key || event.key === null)) custom(); };
+  window.addEventListener(eventName, custom); window.addEventListener('storage', storage);
+  return () => { window.removeEventListener(eventName, custom); window.removeEventListener('storage', storage); };
 }
-
-export function uniqueId(prefix = '') {
-  return prefix + crypto.randomUUID();
-}
-
-/** Only local uploaded raster images may be placed in image attributes. */
-export function safeImage(value) {
-  return typeof value === 'string' && /^data:image\/(?:jpeg|png|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/i.test(value) ? value : '';
-}
-
+export function uniqueId(prefix = '') { return prefix + crypto.randomUUID(); }
 const BACKUP_KEYS = /^(?:echo-(?:chat-state|profile|settings|memory|moments|couple|world)-v1|echo-chat-drafts-v2|echo-business-asset-v2\.[\w-]+|echo-conv-avatar-v1\.[^\u0000-\u001f]+|echo-theme-assets-v1\.[\w.-]+)$/;
-
-export function createBackup() {
-  const data = {};
-  const warnings = [];
+function localBackup() {
+  const data = {}, warnings = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (!key || !BACKUP_KEYS.test(key)) continue;
+    if (key !== 'echo-settings-v1' && !key?.startsWith('echo-theme-assets-v1.')) continue;
     let value = localStorage.getItem(key);
     if (key === 'echo-settings-v1') {
       let settings;
-      try { settings = JSON.parse(value); }
-      catch { warnings.push('设置数据损坏，未导出该项，以免包含未脱敏的 API Key。原始内容仍保留在浏览器中。'); continue; }
-      for (const model of Object.values(settings.models || {})) {
-        if (model && typeof model === 'object') model.apiKey = '';
-      }
+      try { settings = JSON.parse(value); if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Invalid settings'); }
+      catch { warnings.push('设置损坏，未导出该项，避免包含未脱敏凭据。'); continue; }
+      for (const model of Object.values(settings.models || {})) if (model && typeof model === 'object') model.apiKey = '';
       value = JSON.stringify(settings);
     }
     data[key] = value;
   }
-  return { format: 'echo-backup', version: 1, createdAt: new Date().toISOString(), credentialsIncluded: false, warnings, data };
+  return { data, warnings };
 }
-
-/** Restore only keys owned by Echo; roll back every changed key on failure. */
-export function restoreBackup(backup) {
-  if (backup?.format !== 'echo-backup' || backup.version !== 1 || !backup.data || typeof backup.data !== 'object' || Array.isArray(backup.data)) {
-    throw new Error('备份格式不正确。');
-  }
-  const allowed = BACKUP_KEYS;
+export async function createBackup() {
+  const { data, warnings } = localBackup();
+  for (const [key, value] of await exportBusiness()) data[key] = JSON.stringify(value);
+  return { format: 'echo-backup', version: 1, storage: 'indexeddb-v1', createdAt: new Date().toISOString(), credentialsIncluded: false, warnings, data };
+}
+function prepareBackup(backup) {
+  if (backup?.format !== 'echo-backup' || backup.version !== 1 || !backup.data || typeof backup.data !== 'object' || Array.isArray(backup.data)) throw new StorageError('备份格式不正确。');
   const entries = Object.entries(backup.data);
-  if (entries.length > 10000 || entries.some(([key, value]) => !allowed.test(key) || typeof value !== 'string')) throw new Error('备份包含无效数据。');
-  // Validate all structured data before any write; preserve locally configured credentials.
-  const prepared = entries.map(([key, value]) => {
-    if (!key.startsWith('echo-theme-assets-v1.') && !key.startsWith('echo-conv-avatar-v1.') && !key.startsWith('echo-business-asset-v2.')) {
-      const parsed = JSON.parse(value);
-      if (!parsed || typeof parsed !== 'object') throw new Error('备份数据结构不正确。');
-      if (['echo-memory-v1', 'echo-moments-v1', 'echo-world-v1'].includes(key) && !Array.isArray(parsed)) throw new Error('备份列表格式不正确。');
-      if (!['echo-memory-v1', 'echo-moments-v1', 'echo-world-v1'].includes(key) && Array.isArray(parsed)) throw new Error('备份记录格式不正确。');
-      if (key === 'echo-chat-state-v1' && (!Array.isArray(parsed.conversations) || !parsed.messagesByConversation || typeof parsed.messagesByConversation !== 'object')) throw new Error('备份聊天数据不完整。');
-      if (key === 'echo-settings-v1') {
-        const current = readJson(key, {});
-        for (const [type, model] of Object.entries(parsed.models || {})) {
-          if (model && typeof model === 'object') {
-            const old = current.models?.[type];
-            model.apiKey = old?.baseUrl === model.baseUrl ? (old.apiKey || '') : '';
-          }
-        }
-        value = JSON.stringify(parsed);
+  if (entries.length > 10000 || entries.some(([key, value]) => !BACKUP_KEYS.test(key) || typeof value !== 'string')) throw new StorageError('备份包含无效数据。');
+  const business = new Map(), images = new Map(), local = new Map();
+  for (const [key, raw] of entries) {
+    if (isBusinessKey(key)) { business.set(key, JSON.parse(raw)); continue; }
+    if (/^echo-(business-asset-v2|conv-avatar-v1)\./.test(key)) {
+      if (!/^data:image\/(?:jpeg|png|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/i.test(raw)) throw new StorageError('备份图片无效。');
+      images.set(key, raw); continue;
+    }
+    let value = raw;
+    if (key === 'echo-settings-v1') {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || (parsed.version !== undefined && parsed.version !== 1)) throw new StorageError('设置备份无效。');
+      const current = readJson(key, {});
+      for (const [type, model] of Object.entries(parsed.models || {})) if (model && typeof model === 'object') {
+        const existing = current.models?.[type]; model.apiKey = existing?.baseUrl === model.baseUrl ? existing?.apiKey || '' : '';
       }
-    } else if (key.startsWith('echo-theme-assets-v1.') && ['customFontName'].includes(key.split('.').at(-1))) {
-      if (value.length > 500) throw new Error('字体文件名无效。');
+      value = JSON.stringify(parsed);
+    } else if (key === 'echo-theme-assets-v1.customFontName') {
+      if (raw.length > 500) throw new StorageError('字体文件名无效。');
     } else if (key === 'echo-theme-assets-v1.customFont') {
-      if (!/^data:[a-z0-9.+/-]+;base64,[A-Za-z0-9+/=\r\n]+$/i.test(value)) throw new Error('字体数据无效。');
-    } else if (!safeImage(value)) throw new Error('备份包含无效图片。');
-    return [key, value];
-  });
-  const previous = new Map(prepared.map(([key]) => [key, localStorage.getItem(key)]));
-  try { for (const [key, value] of prepared) localStorage.setItem(key, value); }
-  catch (error) {
+      if (!/^data:[a-z0-9.+/-]+;base64,[A-Za-z0-9+/=\r\n]+$/i.test(raw)) throw new StorageError('字体备份无效。');
+    } else if (!/^data:image\/(?:jpeg|png|webp|gif);base64,[A-Za-z0-9+/=\r\n]+$/i.test(raw)) throw new StorageError('主题图片无效。');
+    local.set(key, value);
+  }
+  const chat = business.get('echo-chat-state-v1');
+  if (chat?.conversations) for (const conv of chat.conversations) {
+    if (!conv.avatarData && !conv.avatarRef && images.has('echo-conv-avatar-v1.' + conv.id)) conv.avatarData = images.get('echo-conv-avatar-v1.' + conv.id);
+  }
+  for (const [key, value] of business) business.set(key, hydrate(value, images));
+  return { business, local };
+}
+export async function restoreBackup(backup) {
+  const { business, local } = prepareBackup(backup);
+  const previous = new Map([...local.keys()].map(key => [key, localStorage.getItem(key)]));
+  // Validate business schema in an aborted transaction before touching settings/theme storage.
+  const validation = database().transaction(['records', 'messages', 'assets'], 'readwrite');
+  const validationDone = new Promise(resolve => { validation.onabort = resolve; validation.oncomplete = resolve; });
+  try {
+    if (business.has('echo-chat-state-v1')) validation.objectStore('messages').clear();
+    await importBusiness(validation, business); await verifyImport(validation, business);
+  } finally { try { validation.abort(); } catch { /* already aborted */ } await validationDone; }
+  try {
+    for (const [key, value] of local) localStorage.setItem(key, value);
+    await transact(['records', 'messages', 'assets', 'tasks'], async tx => {
+      if (business.has('echo-chat-state-v1')) { tx.objectStore('messages').clear(); tx.objectStore('tasks').clear(); }
+      await importBusiness(tx, business); await verifyImport(tx, business);
+    }, { keys: [...business.keys()], tasksChanged: true, reset: business.has('echo-chat-state-v1') });
+  } catch (error) {
     let rollbackFailed = false;
     for (const [key, value] of previous) {
       try { if (localStorage.getItem(key) === value) continue; if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); }
       catch { rollbackFailed = true; }
     }
-    throw new StorageError(rollbackFailed ? '恢复未完成，部分数据无法回滚。请保留备份文件并释放空间后重试。' : '恢复失败，已回滚本次更改。请释放存储空间后重试。', error);
+    throw new StorageError(rollbackFailed ? '恢复失败，业务事务已回滚；部分设置未能恢复，请保留备份文件。' : '恢复失败，原有业务数据已保留，设置已回滚。', error);
   }
 }
-
-const IMAGE_FIELDS = { avatarData: 'avatarRef', coverImage: 'coverImageRef', replyCharAvatar: 'replyCharAvatarRef', authorAvatar: 'authorAvatarRef' };
-
-export function hydrateImages(value) {
-  if (Array.isArray(value)) return value.map(hydrateImages);
-  if (!value || typeof value !== 'object') return value;
-  const copy = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, hydrateImages(item)]));
-  for (const [field, ref] of Object.entries(IMAGE_FIELDS)) {
-    if (!copy[field] && typeof copy[ref] === 'string' && copy[ref].startsWith('echo-business-asset-v2.')) {
-      try { copy[field] = localStorage.getItem(copy[ref]) || ''; }
-      catch (error) { throw new StorageError('无法读取本地图片资源。', error); }
-    }
-  }
-  return copy;
-}
-
-/** Immutable assets are staged before the single canonical JSON commit. Old references stay valid. */
-export function writeImageRecord(key, value, eventName) {
-  const staged = [];
-  const dedup = new Map();
-  function serialize(item) {
-    if (Array.isArray(item)) return item.map(serialize);
-    if (!item || typeof item !== 'object') return item;
-    const copy = Object.fromEntries(Object.entries(item).map(([name, child]) => [name, serialize(child)]));
-    for (const [field, ref] of Object.entries(IMAGE_FIELDS)) {
-      const image = copy[field];
-      if (!image) { if (Object.hasOwn(copy, field)) delete copy[ref]; continue; }
-      if (!safeImage(image)) throw new StorageError('图片资源格式无效，原有数据已保留。');
-      let assetKey = copy[ref];
-      if (!assetKey?.startsWith('echo-business-asset-v2.') || localStorage.getItem(assetKey) !== image) {
-        assetKey = dedup.get(image);
-        if (!assetKey) {
-          assetKey = uniqueId('echo-business-asset-v2.');
-          localStorage.setItem(assetKey, image);
-          staged.push(assetKey); dedup.set(image, assetKey);
-        }
-      } else dedup.set(image, assetKey);
-      copy[ref] = assetKey;
-      delete copy[field];
-    }
-    return copy;
-  }
-  let encoded;
-  try { encoded = serialize(value); writeJson(key, encoded); }
-  catch (error) {
-    for (const assetKey of staged) { try { localStorage.removeItem(assetKey); } catch { /* harmless orphan */ } }
-    if (error instanceof StorageError) throw error;
-    throw new StorageError('图片或记录保存失败，原有数据已保留。请先备份并释放空间。', error);
-  }
-  if (eventName) window.dispatchEvent(new CustomEvent(eventName));
-  return hydrateImages(encoded);
+/** Recover the original migration snapshot as a portable backup without deleting the live database. */
+export async function migrationBackup() {
+  const tx = database().transaction(['meta'], 'readonly');
+  const snapshot = await requestResult(tx.objectStore('meta').get('legacySnapshot'));
+  return { format: 'echo-backup', version: 1, credentialsIncluded: false, data: snapshot?.data || {}, createdAt: snapshot?.capturedAt };
 }

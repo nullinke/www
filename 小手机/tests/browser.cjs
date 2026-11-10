@@ -19,13 +19,14 @@ function serve(directory) {
   const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
   let passed = 0;
   async function check(name, run) {
+    if (process.env.TEST_FILTER && !name.includes(process.env.TEST_FILTER)) return;
     const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
     await context.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
     const page = await context.newPage(); const errors = [], dialogs = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.accept(); });
     page.setDefaultTimeout(8000);
-    const go = file => page.goto(base + file, { waitUntil: 'load' });
+    const go = async file => { await page.goto(base + file, { waitUntil: 'load' }); if (!['lock-screen.html'].includes(file.split('?')[0])) { await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady); } };
     await go('home.html');
     try { await run({ page, context, go, errors, dialogs }); assert.deepEqual(errors, []); if (!/quota|backup and restore|memory deletion/.test(name)) assert.deepEqual(dialogs, []); console.log('PASS', name); passed++; }
     finally { await context.close(); }
@@ -43,24 +44,30 @@ function serve(directory) {
       await route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify({ choices: [{ delta: { content: reply || '默认回复' } }] })}\n\ndata: [DONE]\n\n` });
     });
   }
+  async function eventually(predicate, timeout = 8000) {
+    const end = Date.now() + timeout;
+    do { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 40)); } while (Date.now() < end);
+    throw new Error('Timed out waiting for committed state');
+  }
   const settle = page => page.waitForFunction(() => !document.querySelector('#input-message').disabled);
   try {
-    await check('all 16 pages initialize without exceptions', async ({ go }) => {
+    await check('all application pages initialize without exceptions', async ({ go }) => {
       for (const name of fs.readdirSync(root).filter(name => name.endsWith('.html'))) await go(name);
     });
     await check('first creation survives reload and hostile names/previews remain text', async ({ page, go }) => {
       const payload = '<img src=x onerror="window.__xss=1">';
       await go('chat-create.html'); await page.locator('#input-name').fill(payload); await page.locator('#btn-create-submit').click();
-      await page.waitForURL('**/chat-room.html?**');
-      await page.evaluate(async text => { const chat = await import('./js/chat-state.js'); chat.appendMessage(chat.loadChatState().activeConversationId, { author: 'mine', text }); }, payload);
+      await page.waitForURL('**/chat-room.html?**'); await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady);
+      await page.evaluate(async text => { const chat = await import('./js/chat-state.js'); await chat.appendMessage(chat.loadChatState().activeConversationId, { author: 'mine', text }); }, payload);
       await go('chat-list.html');
       assert.equal(await page.locator('.chat-item__name').last().textContent(), payload);
       assert.equal(await page.evaluate(() => window.__xss), undefined);
       assert.equal(await page.locator('.chat-item__body img').count(), 0);
     });
     await check('profile patch preserves archives and images through the real sheet', async ({ page, go }) => {
-      await page.evaluate(async () => { const p = await import('./js/profile-state.js'); p.updateProfile({ archive: { hobbies: 'reading' }, bio: 'old bio' }); });
+      await page.evaluate(async () => { const p = await import('./js/profile-state.js'); await p.updateProfile({ archive: { hobbies: 'reading' }, bio: 'old bio' }); });
       await go('chat-list.html'); await page.locator('#btn-my-profile').click(); await page.locator('#sheet-input-nickname').fill('NewName'); await page.locator('#sheet-save-btn').click();
+      await eventually(() => page.evaluate(async () => (await import('./js/profile-state.js')).loadProfile().nickname === 'NewName'));
       assert.equal(await page.evaluate(async () => (await import('./js/profile-state.js')).loadProfile().archive.hobbies), 'reading');
     });
     await check('mode switch restores single-character submit', async ({ page, go }) => {
@@ -96,7 +103,7 @@ function serve(directory) {
     });
     await check('group replies continue after one member fails and regenerate the actual speaker', async ({ page, go }) => {
       await configure(page); await mockChat(page, [{ status: 500 }, '<think>B</think>群回复一\n群回复二', '群重生成']);
-      const id = await page.evaluate(async () => (await import('./js/chat-state.js')).createConversation({ name: 'Group', avatar: 'group', members: ['nereus', 'momo'] }).id);
+      const id = await page.evaluate(async () => (await (await import('./js/chat-state.js')).createConversation({ name: 'Group', avatar: 'group', members: ['nereus', 'momo'] })).id);
       await go('chat-room.html?conversationId=' + encodeURIComponent(id));
       await page.locator('#input-message').fill('大家好'); await page.locator('#input-message').press('Enter'); await settle(page);
       const messages = await page.evaluate(async id => (await import('./js/chat-state.js')).getMessages(id), id);
@@ -107,18 +114,21 @@ function serve(directory) {
       assert.equal(last.replyCharId, 'momo'); assert.equal(last.text, '群重生成');
     });
     await check('empty collections stay empty and invalid routes do not open other people', async ({ page, go }) => {
-      await page.evaluate(async () => { const chat = await import('./js/chat-state.js'); for (const c of chat.loadChatState().conversations) chat.deleteConversation(c.id); });
+      await page.evaluate(async () => { const chat = await import('./js/chat-state.js'); for (const c of chat.loadChatState().conversations) await chat.deleteConversation(c.id); });
       await go('chat-list.html'); assert.equal(await page.locator('.chat-item').count(), 0);
       await go('chat-room.html?conversationId=missing'); await page.waitForURL('**/chat-list.html?**');
     });
-    await check('quota failure retains all old state and reports failure', async ({ page, go, dialogs }) => {
+    await check('IDB quota failure retains old messages and reports failure', async ({ page, go, dialogs }) => {
       await go('chat-room.html');
-      const previous = await page.evaluate(() => localStorage.getItem('echo-chat-state-v1'));
-      await page.evaluate(() => { Storage.prototype.setItem = function () { throw new DOMException('full', 'QuotaExceededError'); }; });
+      const previous = await page.evaluate(async () => JSON.stringify([...(await (await import('./js/database-state.js')).exportBusiness())]));
+      await page.evaluate(() => {
+        const original = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (...args) { if (this.name === 'records') throw new DOMException('full', 'QuotaExceededError'); return original.apply(this, args); };
+      });
       await page.locator('#input-message').fill('unsaved'); await page.locator('#input-message').press('Enter');
-      await page.waitForFunction(() => document.querySelector('#input-message').value === 'unsaved');
-      assert.equal(await page.evaluate(() => localStorage.getItem('echo-chat-state-v1')), previous);
-      assert.equal(await page.locator('#input-message').isEnabled(), true); assert.ok(dialogs.some(value => value.includes('保存失败')));
+      await page.waitForFunction(() => document.querySelector('#input-message').disabled === false);
+      assert.equal(await page.evaluate(async () => JSON.stringify([...(await (await import('./js/database-state.js')).exportBusiness())])), previous);
+      assert.equal(await page.locator('#input-message').inputValue(), 'unsaved'); assert.ok(dialogs.some(value => value.includes('事务')));
     });
     await check('model probe distinguishes authentication failure and reruns after save', async ({ page, go }) => {
       await configure(page); await page.evaluate(async () => (await import('./js/settings-state.js')).updateSettings(s => { s.mcpEnabled = true; }));
@@ -129,32 +139,32 @@ function serve(directory) {
       assert.equal(count, 2);
     });
     await check('memory changes propagate between tabs', async ({ page, context, go }) => {
-      await go('memory.html'); const other = await context.newPage(); await other.goto(base + 'home.html');
-      await other.evaluate(async () => (await import('./js/memory-state.js')).saveMemory({ content: 'cross-tab-memory', charId: 'nereus' }));
+      await go('memory.html'); const other = await context.newPage(); await other.goto(base + 'home.html'); await other.waitForFunction(() => window.echoReady); await other.evaluate(() => window.echoReady);
+      await other.evaluate(async () => await (await import('./js/memory-state.js')).saveMemory({ content: 'cross-tab-memory', charId: 'nereus' }));
       await page.waitForFunction(() => document.querySelector('#memory-main').textContent.includes('cross-tab-memory'));
     });
     await check('full reply is durable before all segments are displayed', async ({ page, go }) => {
       await configure(page); await mockChat(page, ['一\n二\n三\n四\n五']); await go('chat-room.html');
       await page.locator('#input-message').fill('test refresh'); await page.locator('#input-message').press('Enter');
-      await page.waitForFunction(() => JSON.parse(localStorage.getItem('echo-chat-state-v1')).messagesByConversation.nereus.some(m => m.text === '五'));
-      await page.reload();
+      await eventually(() => page.evaluate(async () => (await (await import('./js/database-state.js')).exportBusiness()).get('echo-chat-state-v1').messagesByConversation.nereus.some(m => m.text === '五')));
+      await page.reload(); await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady);
       assert.equal(await page.locator('.msg__bubble').last().textContent(), '五'); assert.equal(await page.locator('#input-message').isEnabled(), true);
     });
     await check('backup and restore work through the existing world buttons without exporting API keys', async ({ page, go }) => {
       await configure(page);
-      await page.evaluate(async () => (await import('./js/profile-state.js')).updateProfile({ nickname: 'BackupName', archive: { hobbies: 'keep-me' } }));
+      await page.evaluate(async () => await (await import('./js/profile-state.js')).updateProfile({ nickname: 'BackupName', archive: { hobbies: 'keep-me' } }));
       await go('world.html');
       const downloadEvent = page.waitForEvent('download'); await page.locator('#btn-backup').click();
       const download = await downloadEvent;
       const file = fs.readFileSync(await download.path());
       const backup = JSON.parse(file.toString()); assert.equal(file.toString().includes('fake-test-key'), false);
-      await page.evaluate(async () => (await import('./js/profile-state.js')).updateProfile({ nickname: 'Changed' }));
+      await page.evaluate(async () => await (await import('./js/profile-state.js')).updateProfile({ nickname: 'Changed' }));
       const chooserEvent = page.waitForEvent('filechooser'); await page.locator('#btn-restore').click();
       const chooser = await chooserEvent;
+      const reloaded = page.waitForEvent('load');
       await chooser.setFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
-      await page.waitForFunction(() => JSON.parse(localStorage.getItem('echo-profile-v1')).nickname === 'BackupName');
-      await page.waitForLoadState('load');
-      assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('echo-profile-v1')).archive.hobbies), 'keep-me');
+      await reloaded; await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady);
+      assert.equal(await page.evaluate(async () => (await import('./js/profile-state.js')).loadProfile().archive.hobbies), 'keep-me');
     });
     await check('leaving an in-flight reply aborts the request and reload recovers the input', async ({ page, go }) => {
       await configure(page);
@@ -173,9 +183,68 @@ function serve(directory) {
       assert.equal(await page.locator('#model-input-key').inputValue(), '');
     });
     await check('memory deletion renders one empty state', async ({ page, go }) => {
-      await page.evaluate(async () => (await import('./js/memory-state.js')).saveMemory({ content: 'delete-me' }));
+      await page.evaluate(async () => await (await import('./js/memory-state.js')).saveMemory({ content: 'delete-me' }));
       await go('memory.html'); await page.locator('[data-action=delete]').click();
+      await eventually(async () => (await page.locator('.mem-card').count()) === 0);
       assert.equal(await page.locator('.mem-card').count(), 0); assert.equal(await page.locator('#memory-empty').count(), 1);
+    });
+    await check('parallel writes in two tabs preserve messages and independent profile fields', async ({ page, context }) => {
+      const other = await context.newPage(); await other.goto(base + 'home.html'); await other.waitForFunction(() => window.echoReady); await other.evaluate(() => window.echoReady);
+      await Promise.all([page.evaluate(async () => { const chat = await import('./js/chat-state.js'); await Promise.all(Array.from({ length: 10 }, (_, i) => chat.appendMessage('nereus', { author: 'mine', text: 'tab-a-' + i }))); }), other.evaluate(async () => { const chat = await import('./js/chat-state.js'); await Promise.all(Array.from({ length: 10 }, (_, i) => chat.appendMessage('nereus', { author: 'mine', text: 'tab-b-' + i }))); })]);
+      const texts = await page.evaluate(async () => (await (await import('./js/database-state.js')).exportBusiness()).get('echo-chat-state-v1').messagesByConversation.nereus.map(m => m.text));
+      assert.equal(texts.filter(text => text.startsWith('tab-')).length, 20);
+      await Promise.all([page.evaluate(async () => (await import('./js/profile-state.js')).updateProfile({ nickname: 'BothTabs' })), other.evaluate(async () => (await import('./js/profile-state.js')).updateProfile({ archive: { hobbies: 'both-hobbies' } }))]);
+      await eventually(() => page.evaluate(async () => { const p = (await import('./js/profile-state.js')).loadProfile(); return p.nickname === 'BothTabs' && p.archive.hobbies === 'both-hobbies'; }));
+    });
+    await check('a second tab does not interrupt an active reply and becomes usable after completion', async ({ page, context, go }) => {
+      await configure(page);
+      let start, release; let calls = 0;
+      const started = new Promise(resolve => { start = resolve; }); const held = new Promise(resolve => { release = resolve; });
+      await page.route('https://mock.test/v1/chat/completions', async route => {
+        if (!route.request().postDataJSON().stream) return route.fulfill({ contentType: 'application/json', body: '{"choices":[{"message":{"content":"[]"}}]}' });
+        calls++; start(); await held;
+        await route.fulfill({ contentType: 'text/event-stream', body: 'data: {"choices":[{"delta":{"content":"owner reply"}}]}\n\ndata: [DONE]\n\n' });
+      });
+      await go('chat-room.html'); await page.locator('#input-message').fill('owner request'); await page.locator('#input-message').press('Enter'); await started;
+      const other = await context.newPage(); await other.goto(base + 'chat-room.html'); await other.waitForFunction(() => window.echoReady); await other.evaluate(() => window.echoReady);
+      assert.equal(await other.locator('#input-message').isDisabled(), true);
+      assert.match(await other.locator('#input-message').getAttribute('placeholder'), /另一个标签/);
+      assert.equal(await other.evaluate(async () => (await import('./js/chat-state.js')).getMessages('nereus').at(-1).status), 'pending');
+      release(); await settle(page);
+      await eventually(() => other.locator('#input-message').isEnabled()); assert.equal(calls, 1);
+      await eventually(() => other.locator('.msg__bubble').last().textContent().then(text => text === 'owner reply'));
+    });
+    await check('closing the owner tab recovers its abandoned reply without waiting for lease expiry', async ({ page, context, go }) => {
+      await configure(page);
+      let start; const started = new Promise(resolve => { start = resolve; });
+      await page.route('https://mock.test/v1/chat/completions', async route => { start(); await new Promise(resolve => setTimeout(resolve, 1000)); try { await route.abort(); } catch { /* closed tab */ } });
+      await go('chat-room.html'); await page.locator('#input-message').fill('owner disappears'); await page.locator('#input-message').press('Enter'); await started;
+      const other = await context.newPage(); await other.goto(base + 'chat-room.html'); await other.waitForFunction(() => window.echoReady); await other.evaluate(() => window.echoReady);
+      await page.close(); await eventually(() => other.locator('#input-message').isEnabled());
+      const last = await other.evaluate(async () => (await import('./js/chat-state.js')).getMessages('nereus').at(-1));
+      assert.ok(['cancelled', 'interrupted'].includes(last.status));
+    });
+    await check('long chat opens with 100 messages and prepends older messages without moving the reading anchor', async ({ page, go }) => {
+      await page.evaluate(async () => {
+        const chat = await import('./js/chat-state.js'); const state = chat.defaultChatState();
+        state.messagesByConversation.nereus = Array.from({ length: 10000 }, (_, i) => ({ id: 'history-' + i, author: 'mine', text: 'history-' + i, time: '12:00' }));
+        await (await import('./js/storage-state.js')).restoreBackup({ format: 'echo-backup', version: 1, data: { 'echo-chat-state-v1': JSON.stringify(state) } });
+      });
+      await go('chat-room.html'); await page.waitForTimeout(100);
+      assert.equal(await page.locator('.msg').count(), 100);
+      const top = await page.evaluate(() => { window.scrollTo(0, 0); return document.querySelector('[data-msg-id="history-9900"]').getBoundingClientRect().top; });
+      await eventually(async () => (await page.locator('.msg').count()) >= 200);
+      assert.equal(await page.locator('.msg').count(), 200);
+      const after = await page.locator('[data-msg-id="history-9900"]').evaluate(node => node.getBoundingClientRect().top);
+      assert.ok(Math.abs(after - top) < 2);
+      assert.equal(await page.locator('.msg__bubble').first().textContent(), 'history-9800');
+    });
+    await check('long streaming replies follow the bottom of the chat', async ({ page, go }) => {
+      await configure(page); await mockChat(page, ['长回复'.repeat(800)]); await go('chat-room.html');
+      await page.locator('#input-message').fill('long response'); await page.locator('#input-message').press('Enter'); await settle(page);
+      await page.waitForTimeout(80);
+      const position = await page.locator('.msg__bubble').last().evaluate(node => ({ bottom: node.getBoundingClientRect().bottom, viewport: window.innerHeight, scroll: document.scrollingElement.scrollTop }));
+      assert.ok(position.scroll > 0); assert.ok(position.bottom <= position.viewport + 2);
     });
     console.log(`Browser checks passed: ${passed}`);
   } finally { await browser.close(); server.close(); }

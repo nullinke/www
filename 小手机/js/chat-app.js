@@ -1,9 +1,9 @@
 import { streamChat, parseReply, requestCompletion, apiEndpoint } from './api.js';
-import { StorageError, readJson, writeJson, uniqueId, safeImage, createBackup, restoreBackup } from './storage-state.js';
+import { StorageError, readJson, writeJson, uniqueId, safeImage, createBackup, restoreBackup, initializeStorage } from './storage-state.js';
 import {
-  saveChatState,
+  defaultChatState, loadMessagePage, messageWindow, withReplyTask, currentReplyTask, loadReplyHistory, recoverReplyTask,
   appendMessage,
-  updateConversation, createConversation, deleteConversation, updateMessage, removeMessages, replaceReplyTurn,
+  updateConversation, createConversation, deleteConversation, updateMessage, deleteMessage, replaceReplyTurn,
   getConversation,
   getMessages,
   loadChatState,
@@ -34,8 +34,7 @@ import {
 } from './memory-state.js';
 import {
   loadProfile,
-  saveProfile,
-  updateProfile,
+    updateProfile,
   subscribeToProfile,
 } from './profile-state.js';
 import {
@@ -146,8 +145,6 @@ function renderChatList() {
         </div>
       </a>`;
 
-    const link = li.querySelector('a');
-    link.addEventListener('click', () => setActiveConversation(conversation.id));
     fragment.appendChild(li);
   });
 
@@ -223,7 +220,7 @@ function renderMessages(conversation, messages) {
         try {
           const fs = getFreshState();
           // 找当前消息在 peer 消息列表里的顺序，按轮序分配成员
-          const msgPeerIdx = legacyPeerIndices.get(message.id) ?? -1;
+          const msgPeerIdx = message.peerOrdinal ?? legacyPeerIndices.get(message.id) ?? -1;
           const memberIdx  = msgPeerIdx >= 0 ? msgPeerIdx % conversation.members.length : 0;
           const mid        = conversation.members[memberIdx];
           const mc         = fs.conversations.find((c) => c.id === mid);
@@ -284,17 +281,10 @@ function renderMessages(conversation, messages) {
   });
 
   container.replaceChildren(fragment);
-  // 多阶段滚底：rAF + 100ms + 300ms，确保高度撑开后能滚到底
-  const scrollBottom = () => {
-    const last = container.lastElementChild;
-    if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
-  };
-  requestAnimationFrame(scrollBottom);
-  setTimeout(scrollBottom, 100);
-  setTimeout(scrollBottom, 300);
+
 }
 
-function initChatRoom() {
+async function initChatRoom() {
   const root = document.querySelector('#screen-chatroom');
   if (!root) return;
   const route = parseChatRoute();
@@ -302,20 +292,20 @@ function initChatRoom() {
   if (!conversation) { window.location.replace(chatListHref(route.source)); return; }
   root.dataset.navMode = route.mode;
   root.classList.toggle('is-tab-mode', route.mode === 'tab');
-  setActiveConversation(conversation.id);
-  markConversationRead(conversation.id);
+  await setActiveConversation(conversation.id);
+  await markConversationRead(conversation.id);
+  await recoverReplyTask(conversation.id);
+  await loadMessagePage(conversation.id);
   const back = document.querySelector('#btn-room-back');
   if (back) {
-    back.href = chatListHref(route.source);
-    back.classList.toggle('is-context-hidden', route.mode === 'tab');
+    back.href = chatListHref(route.source); back.classList.toggle('is-context-hidden', route.mode === 'tab');
     back.setAttribute('aria-hidden', String(route.mode === 'tab'));
   }
   setText('.room-nav__name', conversation.name);
   setText('.room-nav__status', conversation.alias || conversation.status || '在线');
   const navAvatar = document.getElementById('room-nav-avatar');
   if (navAvatar && safeImage(conversation.avatarData)) {
-    const image = document.createElement('img'); image.src = safeImage(conversation.avatarData); image.alt = conversation.name;
-    navAvatar.replaceChildren(image);
+    const image = document.createElement('img'); image.src = safeImage(conversation.avatarData); image.alt = conversation.name; navAvatar.replaceChildren(image);
   } else setText('#room-nav-initial', conversation.initial || conversation.name.charAt(0));
   if (conversation.bubbleColor) document.documentElement.style.setProperty('--bubble-mine-bg', conversation.bubbleColor);
   if (conversation.peerBubbleColor) document.documentElement.style.setProperty('--bubble-peer-bg', conversation.peerBubbleColor);
@@ -325,36 +315,59 @@ function initChatRoom() {
   const msgContainer = document.querySelector('#room-msgs');
   if (!input) return;
   input.value = loadChatState().drafts[conversation.id] || '';
-  let activeTask = null;
-  let isGenerating = false;
-  let draftTimer = null;
+  let activeTask = null, isGenerating = false, draftTimer = null, loadingOlder = false, disposed = false, taskOwner = null;
   const hidden = new Set();
-  const render = () => {
-    const state = loadChatState();
-    const current = getConversation(conversation.id, state);
+  const scrollingElement = () => msgContainer.scrollHeight > msgContainer.clientHeight + 2 ? msgContainer : document.scrollingElement;
+  const nearBottom = () => { const node = scrollingElement(); return node.scrollHeight - node.clientHeight - node.scrollTop < 120; };
+  const render = ({ follow = false } = {}) => {
+    if (disposed) return;
+    const current = getConversation(conversation.id);
     if (!current) { activeTask?.abort(); window.location.replace(chatListHref(route.source)); return; }
-    renderMessages(current, getMessages(current.id, state).filter(m => !hidden.has(m.id)));
+    if (taskOwner && currentReplyTask(conversation.id)?.owner !== taskOwner) activeTask?.abort();
+    const anchor = [...msgContainer.querySelectorAll('.msg')].find(row => row.getBoundingClientRect().bottom >= 0);
+    const anchorId = anchor?.dataset.msgId, anchorTop = anchor?.getBoundingClientRect().top;
+    const stick = follow || nearBottom();
+    renderMessages(current, getMessages(current.id).filter(m => !hidden.has(m.id)));
+    if (stick) requestAnimationFrame(() => msgContainer.lastElementChild?.scrollIntoView({ block: 'end', behavior: 'instant' }));
+    else if (anchorId) {
+      const replacement = msgContainer.querySelector(`[data-msg-id="${CSS.escape(anchorId)}"]`);
+      if (replacement) scrollingElement().scrollTop += replacement.getBoundingClientRect().top - anchorTop;
+    }
+    const busyElsewhere = Boolean(currentReplyTask(current.id)) && !activeTask;
+    input.disabled = isGenerating || busyElsewhere;
+    input.placeholder = busyElsewhere ? '另一个标签页正在回复…' : (isGenerating ? '正在回复…' : '说点什么…');
   };
-  render();
-  // A reload cannot resume a browser fetch; stale placeholders become explicit interrupted replies.
-  for (const message of getMessages(conversation.id)) {
-    if (message.status === 'pending') updateMessage(conversation.id, message.id, { status: 'interrupted', text: '⚠ 回复已中断，可重新生成' });
+  render({ follow: true });
+  const unsubscribe = subscribeToChatState(() => render());
+  const recoveryTimer = setInterval(() => {
+    if (!activeTask && !disposed && currentReplyTask(conversation.id)) void recoverReplyTask(conversation.id).then(() => render()).catch(reportError);
+  }, 2500);
+  async function loadOlder() {
+    if (disposed || loadingOlder || scrollingElement().scrollTop > 160 || !messageWindow(conversation.id)?.hasMore) return;
+    loadingOlder = true;
+    try {
+      await loadMessagePage(conversation.id, { before: messageWindow(conversation.id).before, limit: 100, append: true });
+      render();
+    } catch (error) { reportError(error); }
+    finally { loadingOlder = false; }
   }
-  const unsubscribe = subscribeToChatState(render);
-  function flushDraft() {
+  window.addEventListener('scroll', loadOlder, { passive: true });
+  msgContainer.addEventListener('scroll', loadOlder, { passive: true });
+  async function flushDraft() {
     clearTimeout(draftTimer); draftTimer = null;
-    if (!isGenerating) setDraft(conversation.id, input.value);
+    if (!isGenerating && !disposed) await setDraft(conversation.id, input.value);
   }
-  input.addEventListener('input', () => { clearTimeout(draftTimer); draftTimer = setTimeout(flushDraft, 350); });
-  input.addEventListener('blur', flushDraft);
+  input.addEventListener('input', () => { clearTimeout(draftTimer); draftTimer = setTimeout(() => { void flushDraft().catch(reportError); }, 350); });
+  input.addEventListener('blur', () => { void flushDraft().catch(reportError); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flushDraft().catch(reportError); });
   input.addEventListener('keydown', event => {
     if (event.key !== 'Enter' || event.isComposing || event.shiftKey) return;
     event.preventDefault(); void sendMessage();
   });
   document.querySelector('#btn-input-voice')?.addEventListener('click', sendMessage);
   window.addEventListener('pagehide', () => {
-    activeTask?.abort(); unsubscribe();
-    try { flushDraft(); } catch (error) { console.warn(error.message); }
+    activeTask?.abort(); clearTimeout(draftTimer); clearInterval(recoveryTimer); disposed = true; unsubscribe();
+    window.removeEventListener('scroll', loadOlder); msgContainer.removeEventListener('scroll', loadOlder);
   }, { once: true });
   const wait = (ms, signal) => new Promise((resolve, reject) => {
     if (signal.aborted) { reject(new DOMException('已取消', 'AbortError')); return; }
@@ -362,70 +375,66 @@ function initChatRoom() {
     const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, ms);
     signal.addEventListener('abort', cancel, { once: true });
   });
-  async function runGeneration({ regenerateMessage = null } = {}) {
+  async function runGeneration({ regenerateMessage = null, userText = '' } = {}) {
     if (activeTask) return;
-    const state = loadChatState();
-    const current = getConversation(conversation.id, state);
-    if (!current) return;
-    let speakers;
-    if (regenerateMessage) {
-      const speaker = getConversation(regenerateMessage.replyCharId || (current.avatar !== 'group' ? current.id : ''), state);
-      if (!speaker) { alert('无法确定原回复角色，请发送新消息。'); return; }
-      speakers = [speaker];
-    } else speakers = current.avatar === 'group' ? (current.members || []).map(id => getConversation(id, state)).filter(Boolean) : [current];
-    if (!speakers.length) { alert('群聊已没有可回复的成员。'); return; }
-    const controller = new AbortController(); activeTask = controller; isGenerating = true;
-    input.disabled = true; input.placeholder = '正在回复…';
+    const controller = new AbortController(); activeTask = controller; isGenerating = true; render();
     try {
-      for (const speaker of speakers) {
-        if (current.avatar === 'group' && !regenerateMessage) await wait(600 + Math.floor(Math.random() * 800), controller.signal);
-        controller.signal.throwIfAborted();
-        if (!getConversation(current.id)) throw new Error('会话已被删除。');
-        const history = getMessages(current.id);
-        const turnId = regenerateMessage?.turnId || uniqueId('turn-');
-        const regenerationIds = new Set(regenerateMessage ? history.filter(m => m.author !== 'mine' && (regenerateMessage.turnId ? m.turnId === regenerateMessage.turnId : m.id === regenerateMessage.id)).map(m => m.id) : []);
-        const firstIndex = regenerateMessage ? history.findIndex(m => regenerationIds.has(m.id)) : history.length;
-        const context = history.slice(0, firstIndex);
-        const pendingId = uniqueId('message-');
-        const identity = { author: 'peer', replyCharId: speaker.id, replyCharName: speaker.name, replyCharInitial: speaker.initial, turnId };
-        // Keep the original completed turn until its replacement commits successfully.
-        appendMessage(current.id, { ...identity, id: pendingId, text: '…', status: 'pending' });
+      await withReplyTask(conversation.id, { signal: controller.signal }, async session => {
+        taskOwner = session.owner;
         try {
-          const raw = await streamChat({
-            conversation: speaker, historyMessages: context, signal: controller.signal,
-            onChunk: (_, fullText) => {
-              const bubble = msgContainer?.querySelector(`[data-msg-id="${CSS.escape(pendingId)}"] .msg__bubble`);
-              if (bubble) bubble.textContent = parseReply(fullText, true).text || '…';
-            },
-          });
-          controller.signal.throwIfAborted();
-          const reply = parseReply(raw);
-          if (!reply.text) throw new Error('回复没有正文，请重新生成。');
-          const parts = reply.text.split('\n').map(text => text.trim()).filter(Boolean);
-          const time = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
-          const entries = parts.map((text, i) => ({ ...identity, id: uniqueId('message-'), text, time, status: 'complete', ...(i === 0 && reply.think ? { think: reply.think } : {}) }));
-          entries.slice(1).forEach(entry => hidden.add(entry.id));
-          replaceReplyTurn(current.id, turnId, entries, regenerateMessage && !regenerateMessage.turnId ? regenerateMessage.id : null);
-          // The full result is already durable. Only its presentation is delayed.
-          for (const entry of entries.slice(1)) { await wait(420, controller.signal); hidden.delete(entry.id); render(); }
-          const userText = context.filter(m => m.author === 'mine').at(-1)?.text || '';
-          void extractMemories(speaker, userText, reply.text, current.id, turnId, controller.signal);
-        } catch (error) {
-          if (error instanceof StorageError) throw error;
-          const pending = getMessages(current.id).find(m => m.id === pendingId);
-          if (pending) updateMessage(current.id, pendingId, {
-            text: error.name === 'AbortError' ? '⚠ 回复已取消，可重新生成' : `⚠ ${error.message}`,
-            status: error.name === 'AbortError' ? 'cancelled' : 'failed',
-          });
-          if (error.name === 'AbortError') throw error;
-        }
-      }
-    } catch (error) {
-      if (error.name !== 'AbortError') reportError(error);
-    } finally {
-      hidden.clear(); activeTask = null; isGenerating = false;
-      input.disabled = false; input.placeholder = '说点什么…'; render();
-    }
+          if (userText) {
+            await appendMessage(conversation.id, { author: 'mine', text: userText }, { owner: session.owner });
+            input.value = ''; await setDraft(conversation.id, ''); render({ follow: true });
+          }
+          const current = getConversation(conversation.id);
+          let speakers;
+          if (regenerateMessage) {
+            const speaker = getConversation(regenerateMessage.replyCharId || (current.avatar !== 'group' ? current.id : ''));
+            if (!speaker) throw new StorageError('无法确定原回复角色，请发送新消息。');
+            speakers = [speaker];
+          } else speakers = current.avatar === 'group' ? (current.members || []).map(id => getConversation(id)).filter(Boolean) : [current];
+          if (!speakers.length) throw new StorageError('群聊已没有可回复的成员。');
+          for (const speaker of speakers) {
+            if (current.avatar === 'group' && !regenerateMessage) await wait(600 + Math.floor(Math.random() * 800), session.signal);
+            session.signal.throwIfAborted();
+            const context = await loadReplyHistory(current.id, { message: regenerateMessage, maxChars: (loadSettings().parameters.context.value + 2) * 1000 });
+            const turnId = regenerateMessage?.turnId || uniqueId('turn-'), pendingId = uniqueId('message-');
+            const identity = { author: 'peer', replyCharId: speaker.id, replyCharName: speaker.name, replyCharInitial: speaker.initial, turnId };
+            await appendMessage(current.id, { ...identity, id: pendingId, text: '…', status: 'pending' }, { owner: session.owner });
+            try {
+              const raw = await streamChat({
+                conversation: speaker, historyMessages: context, signal: session.signal,
+                onChunk: (_, fullText) => {
+                  const bubble = msgContainer?.querySelector(`[data-msg-id="${CSS.escape(pendingId)}"] .msg__bubble`);
+                  if (bubble) {
+                    const follow = nearBottom();
+                    bubble.textContent = parseReply(fullText, true).text || '…';
+                    if (follow) requestAnimationFrame(() => msgContainer.lastElementChild?.scrollIntoView({ block: 'end', behavior: 'instant' }));
+                  }
+                },
+              });
+              session.signal.throwIfAborted();
+              const reply = parseReply(raw); if (!reply.text) throw new Error('回复没有正文，请重新生成。');
+              const parts = reply.text.split('\n').map(text => text.trim()).filter(Boolean);
+              const time = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+              const entries = parts.map((text, index) => ({ ...identity, id: uniqueId('message-'), text, time, status: 'complete', ...(index === 0 && reply.think ? { think: reply.think } : {}) }));
+              entries.slice(1).forEach(entry => hidden.add(entry.id));
+              await replaceReplyTurn(current.id, turnId, entries, regenerateMessage && !regenerateMessage.turnId ? regenerateMessage.id : null, { owner: session.owner });
+              for (const entry of entries.slice(1)) { await wait(420, session.signal); hidden.delete(entry.id); render(); }
+              void extractMemories(speaker, context.filter(m => m.author === 'mine').at(-1)?.text || '', reply.text, current.id, turnId, session.signal);
+            } catch (error) {
+              if (error instanceof StorageError) throw error;
+              if (getMessages(current.id).some(m => m.id === pendingId)) await updateMessage(current.id, pendingId, {
+                text: error.name === 'AbortError' ? '⚠ 回复已取消，可重新生成' : `⚠ ${error.message}`,
+                status: error.name === 'AbortError' ? 'cancelled' : 'failed',
+              }, { owner: session.owner });
+              if (error.name === 'AbortError') throw error;
+            }
+          }
+        } finally { taskOwner = null; }
+      });
+    } catch (error) { if (error.name !== 'AbortError' && !disposed) reportError(error); }
+    finally { hidden.clear(); activeTask = null; isGenerating = false; render(); }
   }
   async function sendMessage() {
     if (isGenerating) return;
@@ -433,12 +442,13 @@ function initChatRoom() {
     try {
       clearTimeout(draftTimer); draftTimer = null;
       const remember = text.match(/^记住[：:]\s*(.+)$/i);
-      if (remember) saveMemory({ id: Date.now() + Math.random(), content: remember[1].trim(), source: 'user', conversationId: conversation.id, charId: conversation.avatar === 'group' ? '' : conversation.id });
-      appendMessage(conversation.id, { author: 'mine', text });
-      input.value = '';
-      try { setDraft(conversation.id, ''); } catch (error) { reportError(error); }
-      if (remember) { appendMessage(conversation.id, { author: 'peer', text: `✓ 已记住：${remember[1].trim()}` }); return; }
-      await runGeneration();
+      if (remember) {
+        await saveMemory({ id: Date.now() + Math.random(), content: remember[1].trim(), source: 'user', conversationId: conversation.id, charId: conversation.avatar === 'group' ? '' : conversation.id });
+        await appendMessage(conversation.id, { author: 'mine', text });
+        await appendMessage(conversation.id, { author: 'peer', text: `✓ 已记住：${remember[1].trim()}` });
+        input.value = ''; await setDraft(conversation.id, ''); return;
+      }
+      await runGeneration({ userText: text });
     } catch (error) { reportError(error); }
   }
 
@@ -515,7 +525,7 @@ function initChatRoom() {
     window.getSelection()?.removeAllRanges();
     window.getSelection()?.addRange(range);
 
-    function commitEdit(e) {
+    async function commitEdit(e) {
       if (e.type === 'keydown' && e.key !== 'Enter') return;
       if (e.type === 'keydown' && e.shiftKey) return;
       if (e.type === 'keydown') e.preventDefault();
@@ -525,7 +535,7 @@ function initChatRoom() {
       bubble.removeEventListener('blur', commitEdit);
       bubble.removeEventListener('keydown', commitEdit);
       if (!newText) return;
-      try { updateMessage(conversation.id, msgId, { text: newText }); }
+      try { await updateMessage(conversation.id, msgId, { text: newText }); }
       catch (error) { reportError(error); }
       render();
     }
@@ -534,11 +544,11 @@ function initChatRoom() {
   });
 
   // 删除
-  ctxDelete?.addEventListener('click', () => {
+  ctxDelete?.addEventListener('click', async () => {
     const msgId = ctxMsgId;
     closeCtxMenu();
     if (!msgId) return;
-    try { removeMessages(conversation.id, message => message.id === msgId); }
+    try { await deleteMessage(conversation.id, msgId); }
     catch (error) { reportError(error); }
     render();
   });
@@ -1007,9 +1017,9 @@ function buildMemoryCard(mem) {
     </div>
   `;
 
-  article.querySelector('[data-action="delete"]').addEventListener('click', () => {
+  article.querySelector('[data-action="delete"]').addEventListener('click', async () => {
     if (!window.confirm('删除这条记忆？')) return;
-    deleteMemory(mem.id);
+    await deleteMemory(mem.id);
 
   });
 
@@ -1101,14 +1111,14 @@ function initProfilePage() {
   if (idEl)       idEl.value       = profile.id;
   if (bioEl)      bioEl.value      = profile.bio;
 
-  saveBtn.addEventListener('click', () => {
+  saveBtn.addEventListener('click', async () => {
     const next = {
       nickname:   nicknameEl?.value.trim() || profile.nickname,
       id:         idEl?.value.trim()       || profile.id,
       bio:        bioEl?.value.trim()      || profile.bio,
       avatarData: profile.avatarData,
     };
-    updateProfile(next);
+    await updateProfile(next);
 
     // 按钮短暂变为"已保存"反馈
     const orig = saveBtn.textContent;
@@ -1267,7 +1277,7 @@ function initChatCreatePage() {
   if (!submitBtn) return;
   submitBtn.disabled = false;
 
-  submitBtn.addEventListener('click', () => {
+  submitBtn.addEventListener('click', async () => {
     try {
       let input;
       if (isGroupMode) {
@@ -1279,7 +1289,7 @@ function initChatCreatePage() {
         if (!name) { nameInput?.focus(); return; }
         input = { name, avatar: 'peer', alias: aliasInput?.value.trim() || '', persona: personaInput?.value.trim() || '', avatarData: pendingAvatar || '' };
       }
-      const created = createConversation(input);
+      const created = await createConversation(input);
       window.location.href = chatRoomHref(created.id, 'list', 'home');
     } catch (error) { reportError(error); }
   });
@@ -1450,7 +1460,7 @@ function initChatListProfileSheet() {
   });
 
   // 保存
-  saveBtn?.addEventListener('click', () => {
+  saveBtn?.addEventListener('click', async () => {
     const current = loadProfile();
     const next = {
       nickname:    inputNick?.value.trim()  || current.nickname,
@@ -1459,7 +1469,7 @@ function initChatListProfileSheet() {
       avatarData:  pendingAvatarData  !== null ? pendingAvatarData  : current.avatarData,
       coverImage:  pendingCoverImage  !== null ? pendingCoverImage  : current.coverImage,
     };
-    updateProfile(next);
+    await updateProfile(next);
     loadAndFill();
     const orig = saveBtn.textContent;
     saveBtn.textContent = '已保存 ✓'; saveBtn.disabled = true;
@@ -1546,10 +1556,10 @@ function initCharProfilePage() {
     fillGroup();
 
     // 保存群名
-    saveGroupBtn?.addEventListener('click', () => {
+    saveGroupBtn?.addEventListener('click', async () => {
       const newName = groupInputName?.value.trim();
       if (!newName) return;
-      updateConversation(conv.id, { name: newName });
+      await updateConversation(conv.id, { name: newName });
       fillGroup();
       if (subnavTitle) subnavTitle.textContent = groupInputName?.value.trim() || conv.name;
       const orig = saveGroupBtn.textContent;
@@ -1606,7 +1616,7 @@ function initCharProfilePage() {
       avatarFile.value = '';
     });
 
-    saveBtn?.addEventListener('click', () => {
+    saveBtn?.addEventListener('click', async () => {
       const name    = inputName?.value.trim()    || conv.name;
       const alias   = inputAlias?.value.trim()   || '';
       const persona = inputPersona?.value.trim() || '';
@@ -1614,7 +1624,7 @@ function initCharProfilePage() {
       if (pendingAvatar !== null) patch.avatarData = pendingAvatar;
       if (pendingBubble !== null) patch.bubbleColor = pendingBubble;
       if (pendingPeerBubble !== undefined) patch.peerBubbleColor = pendingPeerBubble;
-      updateConversation(conv.id, patch);
+      await updateConversation(conv.id, patch);
       fill();
       const orig = saveBtn.textContent;
       saveBtn.textContent = '已保存 ✓'; saveBtn.disabled = true;
@@ -1663,8 +1673,8 @@ function initCharProfilePage() {
         worldList.appendChild(btn);
       });
     }
-    function bindWorld(worldId, worldName) {
-      updateConversation(conv.id, { worldId, worldName: worldName || null });
+    async function bindWorld(worldId, worldName) {
+      await updateConversation(conv.id, { worldId, worldName: worldName || null });
       if (valWorld) valWorld.textContent = worldName || '未绑定';
       closeWorldSheet();
     }
@@ -1730,13 +1740,13 @@ function initCharProfilePage() {
       styleMask.classList.add('is-open');
       document.body.style.overflow = 'hidden';
     }
-    function closeStyleSheet() {
+    async function closeStyleSheet() {
       if (!styleMask) return;
       if (pendingBubble !== null || pendingPeerBubble !== undefined) {
         const patch = {};
         if (pendingBubble !== null) patch.bubbleColor = pendingBubble;
         if (pendingPeerBubble !== undefined) patch.peerBubbleColor = pendingPeerBubble;
-        updateConversation(conv.id, patch);
+        await updateConversation(conv.id, patch);
         pendingBubble = null; pendingPeerBubble = undefined;
       }
       styleMask.classList.remove('is-open');
@@ -1769,9 +1779,9 @@ function initCharProfilePage() {
     if (deleteConfirmMask) deleteConfirmMask.classList.remove('is-open');
     document.body.style.overflow = '';
   }
-  function doDeleteChar() {
+  async function doDeleteChar() {
     closeDeleteConfirm();
-    deleteConversation(conv.id);
+    await deleteConversation(conv.id);
     window.location.href = 'chat-list.html';
   }
   deleteBtn2?.addEventListener('click', openDeleteConfirm);
@@ -1924,8 +1934,8 @@ function initMomentsPage() {
       count.textContent = post.likeCount;
       likeBtn.appendChild(count);
     }
-    likeBtn.addEventListener('click', () => {
-      const updated = toggleLike(post.id);
+    likeBtn.addEventListener('click', async () => {
+      const updated = await toggleLike(post.id);
       if (!updated) return;
       likeBtn.className = `post__action${updated.liked ? ' post__action--liked' : ''}`;
       const icon = likeBtn.querySelector('i');
@@ -1999,10 +2009,10 @@ function initMomentsPage() {
     if (e.target === composeMask) closeCompose();
   });
 
-  composeSubmit?.addEventListener('click', () => {
+  composeSubmit?.addEventListener('click', async () => {
     const text = composeTA?.value.trim();
     if (!text) return;
-    addPost(text);
+    await addPost(text);
     closeCompose();
     // subscribeToPosts 会自动触发 renderPosts
   });
@@ -2444,7 +2454,6 @@ function initArchivePage() {
   let isEditing = false;
 
   function getState() { return loadChatState(); }
-  function saveState(state) { return saveChatState(state); }
 
   // ── 渲染切换条：「我」固定第一位，后跟单人角色 ──────────────────────────
   function renderSwitchBar(conversations) {
@@ -2549,7 +2558,7 @@ function initArchivePage() {
           inp.dataset.fieldId = id;
           el.parentNode.replaceChild(inp, el);
         }
-        inp.value = value;
+        inp.value = value; inp.dataset.originalValue = value;
       } else {
         const staleInp = document.querySelector(`[data-field-id="${id}"]`);
         if (staleInp) {
@@ -2582,46 +2591,19 @@ function initArchivePage() {
   }
 
   // ── 保存编辑：区分「我」和角色 ──────────────────────────────────────────
-  function saveEdits() {
-    if (activeId === ME_ID) {
-      // 保存到 profile
-      const current = loadProfile();
-      const arc = { ...current.archive };
-      document.querySelectorAll('[data-field-id]').forEach((inp) => {
-        const fid = inp.dataset.fieldId;
-        const val = inp.value.trim();
-        if (fid === 'field-name')        current.nickname       = val || current.nickname;
-        else if (fid === 'field-gender')      arc.gender        = val;
-        else if (fid === 'field-age')         arc.age           = val;
-        else if (fid === 'field-birthday')    arc.birthday      = val;
-        else if (fid === 'field-appearance')  arc.appearance    = val;
-        else if (fid === 'field-personality') arc.personality   = val;
-        else if (fid === 'field-hobbies')     arc.hobbies       = val;
-      });
-      current.archive = arc;
-      saveProfile(current);
-    } else {
-      // 保存到 conv.archive
-      const st = getState();
-      if (!st) return;
-      const idx = st.conversations.findIndex((c) => c.id === activeId);
-      if (idx < 0) return;
-      const conv = st.conversations[idx];
-      if (!conv.archive) conv.archive = {};
-      document.querySelectorAll('[data-field-id]').forEach((inp) => {
-        const fid = inp.dataset.fieldId;
-        const val = inp.value.trim();
-        const meta = FIELD_MAP[fid];
-        if (!meta) return;
-        if (meta.parent === 'conv') {
-          conv[meta.key] = val;
-          if (meta.key === 'name') conv.initial = val.charAt(0).toUpperCase();
-        } else {
-          conv.archive[meta.key] = val;
-        }
-      });
-      saveState(st);
-    }
+  async function saveEdits() {
+    const patch = {}, archive = {};
+    document.querySelectorAll('[data-field-id]').forEach(input => {
+      const value = input.value.trim();
+      if (value === input.dataset.originalValue) return;
+      const meta = FIELD_MAP[input.dataset.fieldId];
+      if (!meta) return;
+      if (meta.parent === 'conv') patch[activeId === ME_ID ? 'nickname' : meta.key] = value;
+      else archive[meta.key] = value;
+    });
+    if (Object.keys(archive).length) patch.archive = archive;
+    if (activeId === ME_ID) return await updateProfile(patch);
+    return await updateConversation(activeId, patch);
   }
 
   function updateEditUI() {
@@ -2644,8 +2626,8 @@ function initArchivePage() {
   renderSwitchBar(st?.conversations || []);
   fillFields(ME_ID);
 
-  btnEdit?.addEventListener('click', () => {
-    if (isEditing) { saveEdits(); isEditing = false; }
+  btnEdit?.addEventListener('click', async () => {
+    if (isEditing) { await saveEdits(); isEditing = false; }
     else { isEditing = true; }
     updateEditUI();
     const updated = getState();
@@ -2670,11 +2652,11 @@ function initArchivePage() {
     document.body.style.overflow = '';
     pendingDelId = null;
   }
-  function doArcDel() {
+  async function doArcDel() {
     if (!pendingDelId) { closeArcDel(); return; }
     const id = pendingDelId;
     closeArcDel();
-    deleteConversation(id);
+    await deleteConversation(id);
     // 切换到「我」或第一个可用角色
     activeId = ME_ID;
     isEditing = false;
@@ -2713,7 +2695,7 @@ function initArchivePage() {
   newCharClose?.addEventListener('click', closeNewChar);
   newCharMask?.addEventListener('click', (e) => { if (e.target === newCharMask) closeNewChar(); });
 
-  newCharSubmit?.addEventListener('click', () => {
+  newCharSubmit?.addEventListener('click', async () => {
     const name = newCharName?.value.trim();
     if (!name) {
       newCharName?.focus();
@@ -2722,7 +2704,7 @@ function initArchivePage() {
       return;
     }
     const persona = newCharPersona?.value.trim() || '';
-    const created = createConversation({ name, persona, avatar: 'peer', archive: {} });
+    const created = await createConversation({ name, persona, avatar: 'peer', archive: {} });
     const id = created.id;
     closeNewChar();
     const refreshed = getState();
@@ -2751,7 +2733,7 @@ function initCoupleSpacePage() {
 
   // 读取当前选中角色 id（优先 echo-couple-v1，fallback activeConversationId）
   function getSavedCharId() { return readJson(COUPLE_KEY, {}).charId || null; }
-  function saveCharId(id) { writeJson(COUPLE_KEY, { ...readJson(COUPLE_KEY, {}), charId: id }); }
+  async function saveCharId(id) { await writeJson(COUPLE_KEY, { ...readJson(COUPLE_KEY, {}), charId: id }); }
 
   function getCharConv() {
     try {
@@ -2833,8 +2815,8 @@ function initCoupleSpacePage() {
         btn.appendChild(check);
       }
 
-      btn.addEventListener('click', () => {
-        saveCharId(conv.id);
+      btn.addEventListener('click', async () => {
+        await saveCharId(conv.id);
         applyChar();
         apply(loadProfile());
         closePick();
@@ -2875,7 +2857,7 @@ async function extractMemories(speaker, userText, aiText, conversationId, turnId
     if (!Array.isArray(items) || !getConversation(conversationId) || !getConversation(speaker.id)) return;
     for (const item of items.slice(0, 3)) {
       if (typeof item?.content !== 'string' || !item.content.trim()) continue;
-      saveMemory({ id: Date.now() + Math.random(), content: item.content.trim().slice(0, 200), source: 'system', tags: Array.isArray(item.tags) ? item.tags.filter(tag => ['约定','事件','喜好','羁绊'].includes(tag)).slice(0, 4) : [], conversationId, charId: speaker.id, turnId });
+      await saveMemory({ id: Date.now() + Math.random(), content: item.content.trim().slice(0, 200), source: 'system', tags: Array.isArray(item.tags) ? item.tags.filter(tag => ['约定','事件','喜好','羁绊'].includes(tag)).slice(0, 4) : [], conversationId, charId: speaker.id, turnId });
     }
   } catch (error) { console.warn('[Echo] 记忆提取未完成：', error.message); }
 }
@@ -2915,9 +2897,9 @@ function resizeImage(file, maxSize, quality = 0.82) {
 
 function initBackupActions() {
   if (page !== 'world.html') return;
-  document.getElementById('btn-backup')?.addEventListener('click', () => {
+  document.getElementById('btn-backup')?.addEventListener('click', async () => {
     try {
-      const blob = new Blob([JSON.stringify(createBackup(), null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify(await createBackup(), null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a'); link.href = url; link.download = `echo-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -2928,17 +2910,17 @@ function initBackupActions() {
     input.addEventListener('change', async () => {
       try {
         const file = input.files?.[0]; if (!file) return;
-        if (file.size > 30 * 1024 * 1024) throw new Error('备份文件过大。');
+        if (file.size > 128 * 1024 * 1024) throw new Error('备份文件过大。');
         const backup = JSON.parse(await file.text());
         if (!confirm('将恢复备份中包含的数据。请确认已导出当前备份。API Key 不会从文件导入。')) return;
-        restoreBackup(backup); alert('恢复完成。'); window.location.reload();
+        await restoreBackup(backup); alert('恢复完成。'); window.location.reload();
       } catch (error) { reportError(error); }
     });
     input.click();
   });
 }
 
-function init() {
+async function init() {
   // ── 全局壁纸应用（排除 chat-room 和 lock-screen，它们有专属背景逻辑）────
   (function applyWallpaper() {
     if (page === 'chat-room.html' || page === 'lock-screen.html') return;
@@ -3009,7 +2991,7 @@ function init() {
     subscribeToChatState(renderChatList);
     initChatListProfileSheet();
   }
-  if (page === 'chat-room.html')     initChatRoom();
+  if (page === 'chat-room.html')     await initChatRoom();
   if (page === 'chat-settings.html') { initChatSettings(); initCharProfilePage(); }
   if (page === 'settings.html')      initSettingsPage();
   if (page === 'memory.html')        initMemoryPage();
@@ -3021,5 +3003,11 @@ function init() {
   if (page === 'couple-space.html')   initCoupleSpacePage();
 }
 
-try { init(); } catch (error) { reportError(error); }
+document.getElementById('input-message')?.setAttribute('disabled', '');
+window.echoReady = (async () => {
+  await initializeStorage({ defaults: { 'echo-chat-state-v1': defaultChatState() } });
+  await init();
+})();
+window.echoReady.catch(reportError);
+window.addEventListener('echo-storage-error', event => reportError(event.detail));
 

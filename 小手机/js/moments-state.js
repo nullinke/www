@@ -1,4 +1,6 @@
-import { readJson, writeImageRecord, hydrateImages, uniqueId } from './storage-state.js';
+import { mutateRecord } from './database-state.js';
+import { loadProfile } from './profile-state.js';
+import { readJson, hydrateImages, uniqueId, subscribe } from './storage-state.js';
 // echo-moments-v1 数据格式：
 // Post { id, authorId, authorName, authorInitial, authorAvatar,
 //        text, images[], time, liked, likeCount, comments[] }
@@ -72,33 +74,29 @@ export function loadPosts() {
 }
 
 export function savePosts(posts) {
-  writeImageRecord(STORAGE_KEY, posts, 'echo-moments-change');
+  return mutateRecord(STORAGE_KEY, cloneDefaults, () => posts);
 }
 
-export function toggleLike(id) {
-  const posts = loadPosts();
-  const post  = posts.find((p) => p.id === id);
-  if (!post) return;
-  post.liked     = !post.liked;
-  post.likeCount = Math.max(0, post.likeCount + (post.liked ? 1 : -1));
-  savePosts(posts);
-  return post;
+export async function toggleLike(id) {
+  let result;
+  await mutateRecord(STORAGE_KEY, cloneDefaults, raw => {
+    const posts = raw.map(normalizePost).filter(Boolean);
+    const post = posts.find(p => p.id === id);
+    if (post) { post.liked = !post.liked; post.likeCount = Math.max(0, post.likeCount + (post.liked ? 1 : -1)); result = post; }
+    return posts;
+  });
+  return result;
 }
 
-export function addPost(text, images = []) {
-  const posts = loadPosts();
+export async function addPost(text, images = []) {
   const now   = new Date();
   const time  = new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(now);
 
-  // 读取用户资料作为发布者
-  let nickname = '我'; let avatarData = '';
-  try {
-    const p = JSON.parse(localStorage.getItem('echo-profile-v1') || '{}');
-    if (p.nickname) nickname = p.nickname;
-    if (p.avatarData) avatarData = p.avatarData;
-  } catch { /* ignore */ }
+  const profile = loadProfile();
+  const nickname = profile.nickname;
+  const avatarData = profile.avatarData;
 
   const post = {
     id: uniqueId('post-mine-'),
@@ -114,20 +112,11 @@ export function addPost(text, images = []) {
     likeCount: 0,
     comments: [],
   };
-  posts.unshift(post);
-  savePosts(posts);
+  await mutateRecord(STORAGE_KEY, cloneDefaults, raw => [post, ...raw.map(normalizePost).filter(Boolean)]);
   return post;
 }
 
 export function subscribeToPosts(handler) {
-  const onCustom  = () => handler(loadPosts());
-  const onStorage = (e) => { if (e.key === STORAGE_KEY) handler(loadPosts()); };
-  window.addEventListener('echo-moments-change', onCustom);
-  window.addEventListener('storage', onStorage);
-  return () => {
-    window.removeEventListener('echo-moments-change', onCustom);
-    window.removeEventListener('storage', onStorage);
-  };
+  return subscribe(STORAGE_KEY, 'echo-moments-change', handler, loadPosts);
 }
-
 export { STORAGE_KEY };

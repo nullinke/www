@@ -1,4 +1,5 @@
-import { readJson, writeJson, subscribe } from './storage-state.js';
+import { mutateRecord, NO_CHANGE } from './database-state.js';
+import { readJson, subscribe } from './storage-state.js';
 // echo-memory-v1 数据格式：
 // { id: number, content: string, source: 'user'|'system', createdAt: ISO string, tags: string[] }
 
@@ -32,33 +33,19 @@ export function loadMemories() {
 }
 
 export function saveMemory(item) {
-  const normalized = normalizeItem({
-    id: item.id || (Date.now() + Math.random()),
-    content: item.content,
-    source: item.source || 'user',
-    createdAt: item.createdAt || new Date().toISOString(),
-    tags: item.tags || [],
-    conversationId: item.conversationId, charId: item.charId, turnId: item.turnId,
+  const normalized = normalizeItem({ ...item, id: item.id || Date.now() + Math.random() });
+  if (!normalized) return Promise.resolve();
+  return mutateRecord(STORAGE_KEY, [], raw => {
+    const list = raw.map(normalizeItem).filter(Boolean);
+    if (list.some(m => m.content === normalized.content && m.charId === normalized.charId)) return NO_CHANGE;
+    const index = list.findIndex(m => m.id === normalized.id);
+    if (index >= 0) list[index] = normalized; else list.unshift(normalized);
+    return list;
   });
-  if (!normalized) return;
-
-  const list = loadRaw().map(normalizeItem).filter(Boolean);
-  if (list.some(m => m.content === normalized.content && m.charId === normalized.charId)) return;
-  // id 已存在则更新，否则头插
-  const idx = list.findIndex((m) => m.id === normalized.id);
-  if (idx >= 0) {
-    list[idx] = normalized;
-  } else {
-    list.unshift(normalized);
-  }
-  _persist(list);
-  _dispatch();
 }
 
 export function deleteMemory(id) {
-  const list = loadRaw().map(normalizeItem).filter((m) => m && m.id !== Number(id));
-  _persist(list);
-  _dispatch();
+  return mutateRecord(STORAGE_KEY, [], raw => raw.map(normalizeItem).filter(m => m && m.id !== Number(id)));
 }
 
 // 搜索 + tag 筛选（均为可选）
@@ -94,6 +81,4 @@ export function subscribeToMemories(handler) {
   return subscribe(STORAGE_KEY, 'echo-memory-change', handler, loadMemories);
 }
 
-function _persist(list) { writeJson(STORAGE_KEY, list); }
-function _dispatch() { window.dispatchEvent(new CustomEvent('echo-memory-change')); }
 export { STORAGE_KEY };

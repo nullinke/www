@@ -1,4 +1,5 @@
-import { readJson, writeImageRecord, hydrateImages, StorageError } from './storage-state.js';
+import { mutateRecord } from './database-state.js';
+import { readJson, hydrateImages, StorageError, subscribe } from './storage-state.js';
 // echo-profile-v1 数据格式：
 // { nickname: string, id: string, bio: string, avatarData: string(base64|''), coverImage: string(base64|''),
 //   archive: { gender, age, birthday, appearance, personality, hobbies } }
@@ -58,26 +59,14 @@ export function loadProfile() {
 }
 
 export function saveProfile(profile) {
-  const normalized = normalizeProfile(profile);
-  const result = writeImageRecord(STORAGE_KEY, normalized);
-  window.dispatchEvent(new CustomEvent('echo-profile-change', { detail: result }));
-  return result;
+  return mutateRecord(STORAGE_KEY, null, () => normalizeProfile(profile));
 }
 
 export function updateProfile(patch) {
-  const current = loadProfile();
-  return saveProfile({ ...current, ...patch, archive: { ...current.archive, ...(patch.archive || {}) } });
+  return mutateRecord(STORAGE_KEY, DEFAULT_PROFILE, current => normalizeProfile({ ...current, ...patch, archive: { ...current.archive, ...(patch.archive || {}) } }));
 }
 
 export function subscribeToProfile(handler) {
-  const onCustom  = (e) => handler(normalizeProfile(e.detail));
-  const onStorage = (e) => { if (e.key === STORAGE_KEY) handler(loadProfile()); };
-  window.addEventListener('echo-profile-change', onCustom);
-  window.addEventListener('storage', onStorage);
-  return () => {
-    window.removeEventListener('echo-profile-change', onCustom);
-    window.removeEventListener('storage', onStorage);
-  };
+  return subscribe(STORAGE_KEY, 'echo-profile-change', handler, loadProfile);
 }
-
 export { STORAGE_KEY };
