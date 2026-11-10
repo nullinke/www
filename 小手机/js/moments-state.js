@@ -1,3 +1,4 @@
+import { readJson, writeImageRecord, hydrateImages, uniqueId } from './storage-state.js';
 // echo-moments-v1 数据格式：
 // Post { id, authorId, authorName, authorInitial, authorAvatar,
 //        text, images[], time, liked, likeCount, comments[] }
@@ -47,6 +48,7 @@ function normalizePost(p) {
     authorId:      String(p.authorId   || 'mine'),
     authorName:    String(p.authorName  || '我'),
     authorInitial: String(p.authorInitial || '我'),
+    authorAvatarRef: p.authorAvatarRef,
     authorAvatar:  typeof p.authorAvatar === 'string' ? p.authorAvatar : '',
     authorType:    p.authorType === 'peer' ? 'peer' : 'mine',
     text:          String(p.text).trim(),
@@ -59,27 +61,18 @@ function normalizePost(p) {
 }
 
 function loadRaw() {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    const parsed = stored ? JSON.parse(stored) : null;
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  const value = hydrateImages(readJson(STORAGE_KEY, null));
+  if (value !== null && !Array.isArray(value)) throw new Error('动态数据无效，请先备份。');
+  return value;
 }
 
 export function loadPosts() {
   const raw = loadRaw();
-  if (!raw) return cloneDefaults();
-  const posts = raw.map(normalizePost).filter(Boolean);
-  return posts.length ? posts : cloneDefaults();
+  return raw === null ? cloneDefaults() : raw.map(normalizePost).filter(Boolean);
 }
 
 export function savePosts(posts) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(posts));
-  } catch { /* storage unavailable */ }
-  window.dispatchEvent(new CustomEvent('echo-moments-change'));
+  writeImageRecord(STORAGE_KEY, posts, 'echo-moments-change');
 }
 
 export function toggleLike(id) {
@@ -108,7 +101,7 @@ export function addPost(text, images = []) {
   } catch { /* ignore */ }
 
   const post = {
-    id: `post-mine-${Date.now()}`,
+    id: uniqueId('post-mine-'),
     authorId: 'mine',
     authorName: nickname,
     authorInitial: nickname.charAt(0),

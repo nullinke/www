@@ -1,3 +1,4 @@
+import { readJson, writeImageRecord, hydrateImages, StorageError } from './storage-state.js';
 // echo-profile-v1 数据格式：
 // { nickname: string, id: string, bio: string, avatarData: string(base64|''), coverImage: string(base64|''),
 //   archive: { gender, age, birthday, appearance, personality, hobbies } }
@@ -27,6 +28,7 @@ function normalizeProfile(value) {
   const arc = (value.archive && typeof value.archive === 'object') ? value.archive : {};
   return {
     version: 1,
+    avatarRef: value.avatarRef, coverImageRef: value.coverImageRef,
     nickname:   safeStr(value.nickname,   fallback.nickname,   32),
     id:         safeStr(value.id,         fallback.id,         32),
     bio:        safeStr(value.bio,        fallback.bio,        200),
@@ -50,21 +52,21 @@ function safeStr(value, fallback, maxLen) {
 }
 
 export function loadProfile() {
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    return normalizeProfile(stored ? JSON.parse(stored) : null);
-  } catch {
-    return normalizeProfile(null);
-  }
+  const value = hydrateImages(readJson(STORAGE_KEY, null));
+  if (value !== null && (typeof value !== 'object' || Array.isArray(value) || (value.version !== undefined && value.version !== 1))) throw new StorageError('资料数据结构不受支持，已保留原始内容。');
+  return normalizeProfile(value);
 }
 
 export function saveProfile(profile) {
   const normalized = normalizeProfile(profile);
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-  } catch { /* storage unavailable */ }
-  window.dispatchEvent(new CustomEvent('echo-profile-change', { detail: normalized }));
-  return normalized;
+  const result = writeImageRecord(STORAGE_KEY, normalized);
+  window.dispatchEvent(new CustomEvent('echo-profile-change', { detail: result }));
+  return result;
+}
+
+export function updateProfile(patch) {
+  const current = loadProfile();
+  return saveProfile({ ...current, ...patch, archive: { ...current.archive, ...(patch.archive || {}) } });
 }
 
 export function subscribeToProfile(handler) {

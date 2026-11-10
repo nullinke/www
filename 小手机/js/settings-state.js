@@ -1,3 +1,4 @@
+import { readJson, writeJson, StorageError } from './storage-state.js';
 const STORAGE_KEY = 'echo-settings-v1';
 // 图片资源单独存储，避免 base64 大数据撑爆 settings JSON
 const ASSETS_KEY  = 'echo-theme-assets-v1';
@@ -29,7 +30,6 @@ const DEFAULT_SETTINGS = {
   updatedAt: 0,
 };
 
-let volatileSettings = cloneDefaults();
 
 function cloneDefaults() {
   return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
@@ -87,8 +87,8 @@ function normalizeSettings(value) {
     },
     parameters: {
       temperature: normalizeParameter('temperature', 0, 1.3, 0.1),
-      topP: normalizeParameter('topP', 0, 1.25, 0.01),
-      context: normalizeParameter('context', 8, 68, 8),
+      topP: normalizeParameter('topP', 0, 1, 0.01),
+      context: normalizeParameter('context', 8, 64, 8),
       frequencyPenalty: normalizeParameter('frequencyPenalty', 0, 1.2, 0.1),
       presencePenalty: normalizeParameter('presencePenalty', 0, 1.1, 0.1),
       timeout: Number.isFinite(timeout) ? Math.round(Math.min(600, Math.max(5, timeout))) : fallback.parameters.timeout,
@@ -119,27 +119,15 @@ function safeLabel(value, fallback, maxLen = 80) {
 }
 
 export function loadSettings() {
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (!stored) return normalizeSettings(volatileSettings);
-    volatileSettings = normalizeSettings(JSON.parse(stored));
-    return normalizeSettings(volatileSettings);
-  } catch {
-    return normalizeSettings(volatileSettings);
-  }
+  const settings = readJson(STORAGE_KEY, cloneDefaults);
+  if (!isRecord(settings) || (settings.version !== undefined && settings.version !== 1)) throw new StorageError('设置数据结构不受支持，已保留原始内容。');
+  return normalizeSettings(settings);
 }
 
 export function saveSettings(nextSettings) {
   const settings = normalizeSettings(nextSettings);
   settings.updatedAt = Date.now();
-  volatileSettings = settings;
-
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-  } catch {
-    // Keep the controls usable for the current page session if storage is unavailable.
-  }
-
+  writeJson(STORAGE_KEY, settings);
   window.dispatchEvent(new CustomEvent('echo-settings-change', { detail: settings }));
   return normalizeSettings(settings);
 }
@@ -171,7 +159,7 @@ export function saveThemeAsset(key, base64) {
   try {
     window.localStorage.setItem(ASSETS_KEY + '.' + key, base64);
   } catch (e) {
-    console.warn('[theme-assets] save failed for', key, e.message);
+    throw new StorageError('资源保存失败，请先备份并释放存储空间。', e);
   }
   window.dispatchEvent(new CustomEvent('echo-theme-assets-change', { detail: { key, value: base64 } }));
 }

@@ -1,21 +1,18 @@
+import { readJson, writeJson, subscribe } from './storage-state.js';
 // echo-memory-v1 数据格式：
 // { id: number, content: string, source: 'user'|'system', createdAt: ISO string, tags: string[] }
 
 const STORAGE_KEY = 'echo-memory-v1';
 
 function loadRaw() {
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    const parsed = stored ? JSON.parse(stored) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const value = readJson(STORAGE_KEY, []);
+  if (!Array.isArray(value)) throw new Error('记忆数据无效，请先备份。');
+  return value;
 }
 
 function normalizeItem(item) {
   if (!item || typeof item !== 'object') return null;
-  const id = Number(item.id) || Date.now();
+  const id = Number(item.id) || (Date.now() + Math.random());
   const content = String(item.content || '').trim();
   if (!content) return null;
   return {
@@ -24,6 +21,9 @@ function normalizeItem(item) {
     source: item.source === 'system' ? 'system' : 'user',
     createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
     tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+    conversationId: String(item.conversationId || ''),
+    charId: String(item.charId || ''),
+    turnId: String(item.turnId || ''),
   };
 }
 
@@ -33,15 +33,17 @@ export function loadMemories() {
 
 export function saveMemory(item) {
   const normalized = normalizeItem({
-    id: item.id || Date.now(),
+    id: item.id || (Date.now() + Math.random()),
     content: item.content,
     source: item.source || 'user',
     createdAt: item.createdAt || new Date().toISOString(),
     tags: item.tags || [],
+    conversationId: item.conversationId, charId: item.charId, turnId: item.turnId,
   });
   if (!normalized) return;
 
   const list = loadRaw().map(normalizeItem).filter(Boolean);
+  if (list.some(m => m.content === normalized.content && m.charId === normalized.charId)) return;
   // id 已存在则更新，否则头插
   const idx = list.findIndex((m) => m.id === normalized.id);
   if (idx >= 0) {
@@ -89,21 +91,9 @@ export function formatMemoryDate(isoStr) {
 }
 
 export function subscribeToMemories(handler) {
-  const onStorage = (event) => {
-    if (event.key === STORAGE_KEY) handler(loadMemories());
-  };
-  window.addEventListener('storage', onStorage);
-  return () => window.removeEventListener('storage', onStorage);
+  return subscribe(STORAGE_KEY, 'echo-memory-change', handler, loadMemories);
 }
 
-function _persist(list) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  } catch { /* storage unavailable */ }
-}
-
-function _dispatch() {
-  window.dispatchEvent(new CustomEvent('echo-memory-change'));
-}
-
+function _persist(list) { writeJson(STORAGE_KEY, list); }
+function _dispatch() { window.dispatchEvent(new CustomEvent('echo-memory-change')); }
 export { STORAGE_KEY };

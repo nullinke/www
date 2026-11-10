@@ -1,5 +1,9 @@
+import { streamChat, parseReply, requestCompletion, apiEndpoint } from './api.js';
+import { StorageError, readJson, writeJson, uniqueId, safeImage, createBackup, restoreBackup } from './storage-state.js';
 import {
+  saveChatState,
   appendMessage,
+  updateConversation, createConversation, deleteConversation, updateMessage, removeMessages, replaceReplyTurn,
   getConversation,
   getMessages,
   loadChatState,
@@ -23,6 +27,7 @@ import {
 } from './settings-state.js';
 import {
   filterMemories,
+  subscribeToMemories,
   formatMemoryDate,
   deleteMemory,
   saveMemory,
@@ -30,6 +35,7 @@ import {
 import {
   loadProfile,
   saveProfile,
+  updateProfile,
   subscribeToProfile,
 } from './profile-state.js';
 import {
@@ -38,6 +44,17 @@ import {
   addPost,
   subscribeToPosts,
 } from './moments-state.js';
+
+function reportError(error) {
+  console.error('[Echo]', error);
+  alert(error?.message || '操作未完成，请重试。');
+}
+window.addEventListener('error', event => {
+  if (event.error instanceof StorageError) { event.preventDefault(); reportError(event.error); }
+});
+window.addEventListener('unhandledrejection', event => {
+  event.preventDefault(); reportError(event.reason);
+});
 
 const page = window.location.pathname.split('/').pop() || 'home.html';
 
@@ -57,11 +74,11 @@ function initMainNavigation() {
   if (!tabbar) return;
 
   const state = loadChatState();
-  const activeId = state.activeConversationId || state.conversations[0]?.id || 'nereus';
+  const activeId = state.activeConversationId || state.conversations[0]?.id || null;
   const activePage = currentPageName();
   const links = {
     home: 'home.html',
-    chat: chatRoomHref(activeId, 'tab'),
+    chat: activeId ? chatRoomHref(activeId, 'tab') : chatListHref('home'),
     settings: 'settings.html',
     other: 'other.html',
   };
@@ -97,13 +114,13 @@ function renderChatList() {
     // 头像
     let avatarInner = '';
     if (conversation.avatarData) {
-      avatarInner = `<img src="${conversation.avatarData}" alt="${conversation.name}"
+      avatarInner = `<img src="${safeImage(conversation.avatarData)}" alt="${escapeHtml(conversation.name)}"
         style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
     } else if (conversation.avatar === 'group') {
       avatarInner = `<i class="fa-solid fa-user-group" aria-hidden="true"></i>`;
     } else {
       const initial = conversation.initial || conversation.name.charAt(0).toUpperCase();
-      avatarInner = `<span class="avatar__initial">${initial}</span>`;
+      avatarInner = `<span class="avatar__initial">${escapeHtml(initial)}</span>`;
     }
     const avatarClass = conversation.avatar === 'group'
       ? 'avatar avatar--group'
@@ -120,11 +137,11 @@ function renderChatList() {
       <a class="chat-item glass" href="${chatRoomHref(conversation.id, 'list', source)}">
         <div class="${avatarClass}">${avatarInner}</div>
         <div class="chat-item__body">
-          <span class="chat-item__name">${conversation.name}</span>
-          <span class="chat-item__preview">${conversation.preview || ''}</span>
+          <span class="chat-item__name">${escapeHtml(conversation.name)}</span>
+          <span class="chat-item__preview">${escapeHtml(conversation.preview || '')}</span>
         </div>
         <div class="chat-item__meta">
-          <span class="chat-item__time">${conversation.time || ''}</span>
+          <span class="chat-item__time">${escapeHtml(conversation.time || '')}</span>
           ${unreadHtml}
         </div>
       </a>`;
@@ -161,6 +178,10 @@ function renderMessages(conversation, messages) {
     return freshState;
   }
 
+  const legacyPeerIndices = conversation.avatar === 'group'
+    ? new Map(getMessages(conversation.id, getFreshState()).filter(m => m.author !== 'mine').map((m, index) => [m.id, index]))
+    : new Map();
+
   messages.forEach((message) => {
     if (message.time !== previousTime) {
       const time = document.createElement('time');
@@ -178,7 +199,7 @@ function renderMessages(conversation, messages) {
     avatar.className = `avatar avatar--${message.author === 'mine' ? 'mine' : conversation.avatar}`;
 
     if (message.author === 'mine' && myProfile.avatarData) {
-      avatar.innerHTML = `<img src="${myProfile.avatarData}" alt="我"
+      avatar.innerHTML = `<img src="${safeImage(myProfile.avatarData)}" alt="我"
         style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
     } else if (message.author !== 'mine') {
       // 始终从最新 state 实时查头像，确保角色修改头像后聊天页面同步
@@ -192,19 +213,17 @@ function renderMessages(conversation, messages) {
           const charConv = getFreshState().conversations.find((c) => c.id === lookupId);
           if (charConv) {
             peerAvatar  = charConv.avatarData || '';
-            peerInitial = peerInitial || charConv.initial || charConv.name.charAt(0).toUpperCase();
+            peerInitial = charConv.initial || charConv.name.charAt(0).toUpperCase();
           }
         } catch { /* ignore */ }
       }
 
       // 群聊旧消息（无 replyCharId）：从成员里按消息索引轮流取，保证每条消息对应固定角色
-      if (!peerAvatar && conversation.avatar === 'group' && Array.isArray(conversation.members) && conversation.members.length) {
+      if (!message.replyCharId && !peerAvatar && conversation.avatar === 'group' && Array.isArray(conversation.members) && conversation.members.length) {
         try {
           const fs = getFreshState();
           // 找当前消息在 peer 消息列表里的顺序，按轮序分配成员
-          const allMsgs    = getMessages(conversation.id, fs);
-          const peerMsgs   = allMsgs.filter(m => m.author !== 'mine');
-          const msgPeerIdx = peerMsgs.findIndex(m => m.id === message.id);
+          const msgPeerIdx = legacyPeerIndices.get(message.id) ?? -1;
           const memberIdx  = msgPeerIdx >= 0 ? msgPeerIdx % conversation.members.length : 0;
           const mid        = conversation.members[memberIdx];
           const mc         = fs.conversations.find((c) => c.id === mid);
@@ -219,7 +238,7 @@ function renderMessages(conversation, messages) {
       if (!peerInitial) peerInitial = conversation.initial;
 
       if (peerAvatar) {
-        avatar.innerHTML = `<img src="${peerAvatar}" alt="${peerInitial}"
+        avatar.innerHTML = `<img src="${safeImage(peerAvatar)}" alt="${escapeHtml(peerInitial)}"
           style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
       } else {
         const initial = document.createElement('span');
@@ -278,455 +297,150 @@ function renderMessages(conversation, messages) {
 function initChatRoom() {
   const root = document.querySelector('#screen-chatroom');
   if (!root) return;
-
   const route = parseChatRoute();
+  const conversation = getConversation(route.conversationId);
+  if (!conversation) { window.location.replace(chatListHref(route.source)); return; }
   root.dataset.navMode = route.mode;
   root.classList.toggle('is-tab-mode', route.mode === 'tab');
-  setActiveConversation(route.conversationId);
-  markConversationRead(route.conversationId);
-
+  setActiveConversation(conversation.id);
+  markConversationRead(conversation.id);
   const back = document.querySelector('#btn-room-back');
   if (back) {
-    back.setAttribute('href', chatListHref(route.source));
+    back.href = chatListHref(route.source);
     back.classList.toggle('is-context-hidden', route.mode === 'tab');
-    back.setAttribute('aria-hidden', route.mode === 'tab' ? 'true' : 'false');
+    back.setAttribute('aria-hidden', String(route.mode === 'tab'));
   }
-
-  const state = loadChatState();
-  const conversation = getConversation(route.conversationId, state);
   setText('.room-nav__name', conversation.name);
-  // 备注代替「在线」；无备注则回退到 status
   setText('.room-nav__status', conversation.alias || conversation.status || '在线');
-
-  // 同步顶部小头像
-  const navAvatar  = document.getElementById('room-nav-avatar');
-  const navInitial = document.getElementById('room-nav-initial');
-  if (navAvatar) {
-    if (conversation.avatarData) {
-      navAvatar.innerHTML = `<img src="${conversation.avatarData}" alt="${conversation.name}">`;
-    } else {
-      if (navInitial) navInitial.textContent = conversation.initial || conversation.name.charAt(0).toUpperCase();
-    }
-  }
-
-  // 应用 per-conversation 气泡颜色（我方）
-  if (conversation.bubbleColor) {
-    document.documentElement.style.setProperty('--bubble-mine-bg', conversation.bubbleColor);
-  }
-  // 应用 per-conversation 角色气泡颜色（对方）
-  if (conversation.peerBubbleColor) {
-    document.documentElement.style.setProperty('--bubble-peer-bg', conversation.peerBubbleColor);
-  }
-
+  const navAvatar = document.getElementById('room-nav-avatar');
+  if (navAvatar && safeImage(conversation.avatarData)) {
+    const image = document.createElement('img'); image.src = safeImage(conversation.avatarData); image.alt = conversation.name;
+    navAvatar.replaceChildren(image);
+  } else setText('#room-nav-initial', conversation.initial || conversation.name.charAt(0));
+  if (conversation.bubbleColor) document.documentElement.style.setProperty('--bubble-mine-bg', conversation.bubbleColor);
+  if (conversation.peerBubbleColor) document.documentElement.style.setProperty('--bubble-peer-bg', conversation.peerBubbleColor);
   const more = document.querySelector('#btn-room-more');
-  if (more) more.setAttribute('href', chatSettingsHref(conversation.id, route.mode, route.source));
-
+  if (more) more.href = chatSettingsHref(conversation.id, route.mode, route.source);
   const input = document.querySelector('#input-message');
-  if (input) input.value = state.drafts[conversation.id] || '';
-
-  const render = () => {
-    // 直接从 raw localStorage 读，完全绕开 normalizeState
-    try {
-      const rawStr = localStorage.getItem('echo-chat-state-v1');
-      if (!rawStr) return;
-      const raw = JSON.parse(rawStr);
-      const convId = route.conversationId;
-      const current = raw.conversations?.find(c => c.id === convId)
-                   || raw.conversations?.[0];
-      if (!current) return;
-      const msgs = raw.messagesByConversation?.[current.id] || [];
-      renderMessages(current, msgs);
-    } catch { /* ignore */ }
-  };
-
-  // ── 群聊：为历史 peer 消息补填 replyCharId（轮流分配给成员）──────────────
-  if (conversation.avatar === 'group' && Array.isArray(conversation.members) && conversation.members.length) {
-    try {
-      const st = loadChatState();
-      const msgs = st.messagesByConversation[conversation.id];
-      const members = conversation.members.filter(mid => st.conversations.find(c => c.id === mid));
-      if (msgs && members.length) {
-        let changed = false;
-        let memberIdx = 0;
-        msgs.forEach((msg) => {
-          if (msg.author !== 'mine' && !msg.replyCharId) {
-            const mid = members[memberIdx % members.length];
-            const mc  = st.conversations.find(c => c.id === mid);
-            if (mc) {
-              msg.replyCharId      = mc.id;
-              msg.replyCharName    = mc.name;
-              msg.replyCharInitial = mc.initial || mc.name.charAt(0).toUpperCase();
-              msg.replyCharAvatar  = mc.avatarData || '';
-              changed = true;
-            }
-            memberIdx++;
-          }
-        });
-        if (changed) {
-          st.updatedAt = Date.now();
-          localStorage.setItem('echo-chat-state-v1', JSON.stringify(st));
-        }
-      }
-    } catch { /* ignore */ }
-  }
-
-  render(state);
-
-  // 首次进入：用多种时机确保滚到最新消息
   const msgContainer = document.querySelector('#room-msgs');
-  if (msgContainer) {
-    const scrollToBottom = () => {
-      // 用 scrollIntoView 定位最后一个子元素，绕过 flex scrollHeight 问题
-      const lastChild = msgContainer.lastElementChild;
-      if (lastChild) {
-        lastChild.scrollIntoView({ block: 'end', behavior: 'instant' });
-      } else {
-        msgContainer.scrollTo({ top: msgContainer.scrollHeight, behavior: 'instant' });
-      }
-    };
-
-    // 1. 立即尝试
-    scrollToBottom();
-
-    // 2. 下一帧（DOM 渲染完）
-    requestAnimationFrame(scrollToBottom);
-
-    // 3. 等图片/字体加载（100ms / 300ms / 800ms 三档）
-    setTimeout(scrollToBottom, 100);
-    setTimeout(scrollToBottom, 300);
-    setTimeout(scrollToBottom, 800);
-
-    // 4. ResizeObserver：容器高度变化时（图片加载导致撑高）就滚底
-    //    触发 3 次后自动断开，避免干扰用户主动滚动
-    let resizeCount = 0;
-    const ro = new ResizeObserver(() => {
-      scrollToBottom();
-      resizeCount++;
-      if (resizeCount >= 8) ro.disconnect();
-    });
-    ro.observe(msgContainer);
-    // 页面加载完后断开
-    setTimeout(() => ro.disconnect(), 2000);
+  if (!input) return;
+  input.value = loadChatState().drafts[conversation.id] || '';
+  let activeTask = null;
+  let isGenerating = false;
+  let draftTimer = null;
+  const hidden = new Set();
+  const render = () => {
+    const state = loadChatState();
+    const current = getConversation(conversation.id, state);
+    if (!current) { activeTask?.abort(); window.location.replace(chatListHref(route.source)); return; }
+    renderMessages(current, getMessages(current.id, state).filter(m => !hidden.has(m.id)));
+  };
+  render();
+  // A reload cannot resume a browser fetch; stale placeholders become explicit interrupted replies.
+  for (const message of getMessages(conversation.id)) {
+    if (message.status === 'pending') updateMessage(conversation.id, message.id, { status: 'interrupted', text: '⚠ 回复已中断，可重新生成' });
   }
-
-  if (input) {
-    input.addEventListener('input', () => setDraft(conversation.id, input.value));
-    input.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' || event.isComposing || event.shiftKey) return;
-      event.preventDefault();
-      sendMessage();
-    });
+  const unsubscribe = subscribeToChatState(render);
+  function flushDraft() {
+    clearTimeout(draftTimer); draftTimer = null;
+    if (!isGenerating) setDraft(conversation.id, input.value);
   }
-
-  // 发送按钮（麦克风图标旁边，后续可改为专用发送按钮）
-  // 暂时复用 btn-input-voice 作为发送触发（点击发送）
+  input.addEventListener('input', () => { clearTimeout(draftTimer); draftTimer = setTimeout(flushDraft, 350); });
+  input.addEventListener('blur', flushDraft);
+  input.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.isComposing || event.shiftKey) return;
+    event.preventDefault(); void sendMessage();
+  });
   document.querySelector('#btn-input-voice')?.addEventListener('click', sendMessage);
-
-  // ── 发送 + AI 回复核心逻辑 ────────────────────────────────────────────────
-  let isGenerating = false;  // 防止重复发送
-
-  async function sendMessage() {
-    if (!input) return;
-    const text = input.value.trim();
-    if (!text || isGenerating) return;
-
-    // 检测"记住："指令（保持原有功能）
-    const rememberMatch = text.match(/^记住[：:]\s*(.+)$/i);
-    if (rememberMatch) {
-      const memoryContent = rememberMatch[1].trim();
-      const memories = JSON.parse(localStorage.getItem('echo-memory-v1') || '[]');
-      memories.unshift({
-        id: Date.now(), content: memoryContent, source: 'user',
-        createdAt: new Date().toISOString(), tags: [],
-      });
-      localStorage.setItem('echo-memory-v1', JSON.stringify(memories));
-      appendMessage(conversation.id, { author: 'mine', text });
-      appendMessage(conversation.id, { author: 'peer', text: `✓ 已记住：${memoryContent}` });
-      setDraft(conversation.id, '');
-      input.value = '';
-      render();
-      return;
-    }
-
-    // 写入用户消息
-    appendMessage(conversation.id, { author: 'mine', text });
-    setDraft(conversation.id, '');
-    input.value = '';
-    render();
-
-    // 禁用输入
-    isGenerating = true;
-    input.disabled = true;
-    input.placeholder = '正在回复…';
-
-    // 获取当前完整历史（含刚写入的用户消息）
-    const currentState = loadChatState();
-    const currentConv  = getConversation(conversation.id, currentState);
-    const history      = getMessages(conversation.id, currentState);
-
-    // ── 群聊：所有成员依次串行回复 ──────────────────────────────────────────
-    if (currentConv.avatar === 'group' && Array.isArray(currentConv.members) && currentConv.members.length) {
-      const memberConvs = currentConv.members
-        .map((mid) => currentState.conversations.find((c) => c.id === mid))
-        .filter(Boolean);
-
-      if (!memberConvs.length) {
-        isGenerating = false; input.disabled = false; input.placeholder = '说点什么…';
-        return;
-      }
-
-      // 串行：每个成员回复完成后再触发下一个
-      async function replySequential(idx) {
-        if (idx >= memberConvs.length) {
-          // 所有成员回复完毕，解锁输入
-          isGenerating = false;
-          input.disabled = false;
-          input.placeholder = '说点什么…';
-          input.focus();
-          return;
-        }
-
-        const member = memberConvs[idx];
-        // 随机停顿 600-1400ms，模拟"对方正在输入"节奏
-        const delay = 600 + Math.floor(Math.random() * 800);
-        await new Promise(r => setTimeout(r, delay));
-
-        const sid = `${conversation.id}-${member.id}-${Date.now()}`;
-        appendMessage(conversation.id, { id: sid, author: 'peer', text: '…',
-          replyCharId: member.id, replyCharName: member.name,
-          replyCharInitial: member.initial || member.name.charAt(0).toUpperCase(),
-          replyCharAvatar: member.avatarData || '' });
-        render();
-
-        const mc = document.querySelector('#room-msgs');
-        function getLastMemberBubble() {
-          const bs = mc?.querySelectorAll('.msg--peer .msg__bubble');
-          return bs ? bs[bs.length - 1] : null;
-        }
-        let lb = getLastMemberBubble();
-
-        await streamChat({
-          conversation: member,
-          historyMessages: getMessages(conversation.id, loadChatState()),
-          onChunk: (_, fullText) => {
-            const vis = fullText
-              .replace(/<think>[\s\S]*?<\/think>/gi, '')
-              .replace(/<think>[\s\S]*/i, '').trim();
-            if (lb) {
-              lb.textContent = vis || '…';
-              requestAnimationFrame(() => {
-                const last = mc?.lastElementChild;
-                if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
-              });
-            }
-          },
-          onDone: (fullText) => {
-            const thinkMatch   = fullText.match(/<think>([\s\S]*?)<\/think>/i);
-            const thinkContent = thinkMatch ? thinkMatch[1].trim() : '';
-            const bodyText     = fullText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-            const toSplit      = bodyText || fullText;
-            const segs         = toSplit.split('\n').map(s => s.trim()).filter(Boolean);
-
-            const st2 = loadChatState();
-            const ms2 = st2.messagesByConversation[conversation.id];
-            if (ms2) {
-              const ph = ms2.find(m => m.id === sid);
-              if (ph) {
-                ph.text = segs[0] || toSplit || '（无回复）';
-                if (thinkContent) ph.think = thinkContent;
-              }
-              const gc = st2.conversations.find(c => c.id === conversation.id);
-              if (gc && toSplit) {
-                gc.preview = segs[segs.length - 1] || toSplit;
-                gc.time    = ms2[ms2.length - 1]?.time || gc.time;
-              }
-            }
-            try { st2.updatedAt = Date.now(); localStorage.setItem('echo-chat-state-v1', JSON.stringify(st2)); } catch { /* */ }
-            render();
-
-            // 后续分段逐条延迟写入
-            const afterSegs = segs.slice(1);
-            afterSegs.forEach((seg, i) => {
-              setTimeout(() => {
-                appendMessage(conversation.id, {
-                  author: 'peer', text: seg,
-                  replyCharId: member.id, replyCharName: member.name,
-                  replyCharInitial: member.initial || member.name.charAt(0).toUpperCase(),
-                  replyCharAvatar: member.avatarData || '',
-                });
-                render();
-                // 最后一段触发下一个成员
-                if (i === afterSegs.length - 1) replySequential(idx + 1);
-              }, (i + 1) * 420);
-            });
-            // 没有分段时直接触发下一个成员
-            if (!afterSegs.length) replySequential(idx + 1);
-          },
-          onError: (err) => {
-            const st2 = loadChatState();
-            const ms2 = st2.messagesByConversation[conversation.id];
-            if (ms2) {
-              const ph = ms2.find(m => m.id === sid);
-              if (ph) ph.text = `⚠ ${err.message}`;
-              try { st2.updatedAt = Date.now(); localStorage.setItem('echo-chat-state-v1', JSON.stringify(st2)); } catch { /* */ }
-            }
-            render();
-            // 出错也继续下一个成员
-            replySequential(idx + 1);
-          },
-        });
-      }
-
-      replySequential(0);
-      return; // 群聊逻辑结束，不走下方单人逻辑
-    }
-
-    // ── 单人对话回复逻辑 ────────────────────────────────────────────────────
-    let replyConv = currentConv;
-
-    // 创建一个临时气泡（流式更新）
-    const streamMsgId  = `${conversation.id}-stream-${Date.now()}`;
-    // 先写入空消息占位（显示"…"），附带回复角色信息（群聊时用于显示正确头像）
-    appendMessage(conversation.id, { id: streamMsgId, author: 'peer', text: '…',
-      replyCharId: replyConv.id, replyCharName: replyConv.name,
-      replyCharInitial: replyConv.initial || replyConv.name.charAt(0).toUpperCase(),
-      replyCharAvatar: replyConv.avatarData || '' });
-    render();
-
-    // 获取消息容器里最后一条气泡元素，用于流式更新文字
-    const msgContainer = document.querySelector('#room-msgs');
-    function getLastBubble() {
-      const bubbles = msgContainer?.querySelectorAll('.msg--peer .msg__bubble');
-      return bubbles ? bubbles[bubbles.length - 1] : null;
-    }
-    let lastBubble = getLastBubble();
-
-    await streamChat({
-      conversation: replyConv,   // 群聊时用随机选出的成员角色
-      historyMessages: history,  // 含用户消息，不含占位（占位在第354行才写入）
-      onChunk: (delta, fullText) => {
-        // 流式更新时过滤掉 <think> 块，避免标签文本暴露给用户
-        const visibleText = fullText
-          .replace(/<think>[\s\S]*?<\/think>/gi, '')   // 完整 think 块直接去掉
-          .replace(/<think>[\s\S]*/i, '')               // think 块开始但尚未闭合时也隐藏
-          .trim();
-        if (lastBubble) {
-          lastBubble.textContent = visibleText || '…';
-          // 滚到最新
-          requestAnimationFrame(() => {
-            const last = msgContainer?.lastElementChild;
-            if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
-          });
-        }
-      },
-      onDone: (fullText) => {
-        // 解析 <think>...</think> 心声标签（兼容模型自带 think token 或 prompt 要求格式）
-        const thinkMatch = fullText.match(/<think>([\s\S]*?)<\/think>/i);
-        const thinkContent = thinkMatch ? thinkMatch[1].trim() : '';
-        // 去掉 think 块后剩下的是正文
-        const bodyText = fullText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-        const textToSplit = bodyText || fullText;
-
-        // 把换行分段拆成多条消息（模拟分次发送）
-        const segments = textToSplit.split('\n').map(s => s.trim()).filter(Boolean);
-        const finalText = segments[segments.length - 1] || textToSplit || '（无回复）';
-
-        // 先把占位消息改成第一段内容，附上心声
-        // 直接操作 localStorage，绕过 normalizeState 的任何潜在问题
+  window.addEventListener('pagehide', () => {
+    activeTask?.abort(); unsubscribe();
+    try { flushDraft(); } catch (error) { console.warn(error.message); }
+  }, { once: true });
+  const wait = (ms, signal) => new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new DOMException('已取消', 'AbortError')); return; }
+    const cancel = () => { clearTimeout(timer); reject(new DOMException('已取消', 'AbortError')); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, ms);
+    signal.addEventListener('abort', cancel, { once: true });
+  });
+  async function runGeneration({ regenerateMessage = null } = {}) {
+    if (activeTask) return;
+    const state = loadChatState();
+    const current = getConversation(conversation.id, state);
+    if (!current) return;
+    let speakers;
+    if (regenerateMessage) {
+      const speaker = getConversation(regenerateMessage.replyCharId || (current.avatar !== 'group' ? current.id : ''), state);
+      if (!speaker) { alert('无法确定原回复角色，请发送新消息。'); return; }
+      speakers = [speaker];
+    } else speakers = current.avatar === 'group' ? (current.members || []).map(id => getConversation(id, state)).filter(Boolean) : [current];
+    if (!speakers.length) { alert('群聊已没有可回复的成员。'); return; }
+    const controller = new AbortController(); activeTask = controller; isGenerating = true;
+    input.disabled = true; input.placeholder = '正在回复…';
+    try {
+      for (const speaker of speakers) {
+        if (current.avatar === 'group' && !regenerateMessage) await wait(600 + Math.floor(Math.random() * 800), controller.signal);
+        controller.signal.throwIfAborted();
+        if (!getConversation(current.id)) throw new Error('会话已被删除。');
+        const history = getMessages(current.id);
+        const turnId = regenerateMessage?.turnId || uniqueId('turn-');
+        const regenerationIds = new Set(regenerateMessage ? history.filter(m => m.author !== 'mine' && (regenerateMessage.turnId ? m.turnId === regenerateMessage.turnId : m.id === regenerateMessage.id)).map(m => m.id) : []);
+        const firstIndex = regenerateMessage ? history.findIndex(m => regenerationIds.has(m.id)) : history.length;
+        const context = history.slice(0, firstIndex);
+        const pendingId = uniqueId('message-');
+        const identity = { author: 'peer', replyCharId: speaker.id, replyCharName: speaker.name, replyCharInitial: speaker.initial, turnId };
+        // Keep the original completed turn until its replacement commits successfully.
+        appendMessage(current.id, { ...identity, id: pendingId, text: '…', status: 'pending' });
         try {
-          const rawStr = localStorage.getItem('echo-chat-state-v1');
-          if (rawStr) {
-            const raw = JSON.parse(rawStr);
-            const msgs = raw.messagesByConversation?.[conversation.id];
-            if (msgs) {
-              const placeholder = msgs.find((m) => m.id === streamMsgId);
-              if (placeholder) {
-                placeholder.text  = segments[0] || textToSplit || '（无回复）';
-                if (thinkContent) placeholder.think = thinkContent;
-              }
-            }
-            const conv = raw.conversations?.find((c) => c.id === conversation.id);
-            if (conv && textToSplit) {
-              conv.preview = finalText;
-              const latestMsg = raw.messagesByConversation?.[conversation.id];
-              conv.time = latestMsg?.[latestMsg.length - 1]?.time || conv.time;
-            }
-            raw.updatedAt = Date.now();
-            localStorage.setItem('echo-chat-state-v1', JSON.stringify(raw));
-          }
-        } catch { /* ignore */ }
-        render();
-
-        // 后续段落逐条延迟写入（每段间隔 420ms，模拟输入停顿）
-        if (segments.length > 1) {
-          segments.slice(1).forEach((seg, i) => {
-            setTimeout(() => {
-              // 直接操作 raw localStorage（与第一段保持一致）
-              try {
-                const rawStr2 = localStorage.getItem('echo-chat-state-v1');
-                if (rawStr2) {
-                  const raw2 = JSON.parse(rawStr2);
-                  if (!raw2.messagesByConversation) raw2.messagesByConversation = {};
-                  if (!raw2.messagesByConversation[conversation.id]) raw2.messagesByConversation[conversation.id] = [];
-                  const now2 = new Intl.DateTimeFormat('zh-CN', { hour:'2-digit', minute:'2-digit', hour12:false }).format(new Date());
-                  const newEntry = {
-                    id: `${conversation.id}-seg-${Date.now()}`,
-                    author: 'peer',
-                    text: seg,
-                    time: now2,
-                    replyCharId:      replyConv.id,
-                    replyCharName:    replyConv.name,
-                    replyCharInitial: replyConv.initial || replyConv.name.charAt(0).toUpperCase(),
-                    replyCharAvatar:  replyConv.avatarData || '',
-                  };
-                  raw2.messagesByConversation[conversation.id].push(newEntry);
-                  // 更新预览
-                  const convEntry = raw2.conversations?.find(c => c.id === conversation.id);
-                  if (convEntry) { convEntry.preview = seg; convEntry.time = now2; }
-                  raw2.updatedAt = Date.now();
-                  localStorage.setItem('echo-chat-state-v1', JSON.stringify(raw2));
-                }
-              } catch { /* ignore */ }
-              render();
-              // 最后一段解锁输入，并触发记忆提取
-              if (i === segments.length - 2) {
-                isGenerating   = false;
-                input.disabled = false;
-                input.placeholder = '说点什么…';
-                input.focus();
-                // 静默提取记忆（不等待结果）
-                extractMemories(replyConv.name, text, textToSplit);
-              }
-            }, (i + 1) * 420);
+          const raw = await streamChat({
+            conversation: speaker, historyMessages: context, signal: controller.signal,
+            onChunk: (_, fullText) => {
+              const bubble = msgContainer?.querySelector(`[data-msg-id="${CSS.escape(pendingId)}"] .msg__bubble`);
+              if (bubble) bubble.textContent = parseReply(fullText, true).text || '…';
+            },
           });
-        } else {
-          // 只有一段，直接解锁
-          isGenerating   = false;
-          input.disabled = false;
-          input.placeholder = '说点什么…';
-          input.focus();
-          // 静默提取记忆（不等待结果）
-          extractMemories(replyConv.name, text, textToSplit);
+          controller.signal.throwIfAborted();
+          const reply = parseReply(raw);
+          if (!reply.text) throw new Error('回复没有正文，请重新生成。');
+          const parts = reply.text.split('\n').map(text => text.trim()).filter(Boolean);
+          const time = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+          const entries = parts.map((text, i) => ({ ...identity, id: uniqueId('message-'), text, time, status: 'complete', ...(i === 0 && reply.think ? { think: reply.think } : {}) }));
+          entries.slice(1).forEach(entry => hidden.add(entry.id));
+          replaceReplyTurn(current.id, turnId, entries, regenerateMessage && !regenerateMessage.turnId ? regenerateMessage.id : null);
+          // The full result is already durable. Only its presentation is delayed.
+          for (const entry of entries.slice(1)) { await wait(420, controller.signal); hidden.delete(entry.id); render(); }
+          const userText = context.filter(m => m.author === 'mine').at(-1)?.text || '';
+          void extractMemories(speaker, userText, reply.text, current.id, turnId, controller.signal);
+        } catch (error) {
+          if (error instanceof StorageError) throw error;
+          const pending = getMessages(current.id).find(m => m.id === pendingId);
+          if (pending) updateMessage(current.id, pendingId, {
+            text: error.name === 'AbortError' ? '⚠ 回复已取消，可重新生成' : `⚠ ${error.message}`,
+            status: error.name === 'AbortError' ? 'cancelled' : 'failed',
+          });
+          if (error.name === 'AbortError') throw error;
         }
-      },
-      onError: (err) => {
-        // 把占位消息改为错误提示
-        const st = loadChatState();
-        const msgs = st.messagesByConversation[conversation.id];
-        if (msgs) {
-          const placeholder = msgs.find((m) => m.id === streamMsgId);
-          if (placeholder) placeholder.text = `⚠ ${err.message}`;
-          try { st.updatedAt = Date.now(); localStorage.setItem('echo-chat-state-v1', JSON.stringify(st)); } catch { /* ignore */ }
-        }
-        isGenerating   = false;
-        input.disabled = false;
-        input.placeholder = '说点什么…';
-        render();
-      },
-    });
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError') reportError(error);
+    } finally {
+      hidden.clear(); activeTask = null; isGenerating = false;
+      input.disabled = false; input.placeholder = '说点什么…'; render();
+    }
   }
-
-  subscribeToChatState(render);
+  async function sendMessage() {
+    if (isGenerating) return;
+    const text = input.value.trim(); if (!text) return;
+    try {
+      clearTimeout(draftTimer); draftTimer = null;
+      const remember = text.match(/^记住[：:]\s*(.+)$/i);
+      if (remember) saveMemory({ id: Date.now() + Math.random(), content: remember[1].trim(), source: 'user', conversationId: conversation.id, charId: conversation.avatar === 'group' ? '' : conversation.id });
+      appendMessage(conversation.id, { author: 'mine', text });
+      input.value = '';
+      try { setDraft(conversation.id, ''); } catch (error) { reportError(error); }
+      if (remember) { appendMessage(conversation.id, { author: 'peer', text: `✓ 已记住：${remember[1].trim()}` }); return; }
+      await runGeneration();
+    } catch (error) { reportError(error); }
+  }
 
   // ── 长按消息上下文菜单 ────────────────────────────────────────────────────
   const ctxMask   = document.getElementById('msg-ctx-mask');
@@ -737,12 +451,10 @@ function initChatRoom() {
 
   // 当前选中的消息元数据
   let ctxMsgId   = null;   // message id in storage
-  let ctxAuthor  = null;   // 'mine' | 'peer'
   let ctxBubbleEl = null;  // DOM bubble element
 
   function openCtxMenu(msgId, author, bubbleEl, clientX, clientY) {
     ctxMsgId    = msgId;
-    ctxAuthor   = author;
     ctxBubbleEl = bubbleEl;
 
     // 「编辑」只对自己消息开放；「重新生成」只对 peer 最后一条
@@ -782,7 +494,7 @@ function initChatRoom() {
     if (ctxMenu)  ctxMenu.style.display = 'none';
     if (ctxMask)  ctxMask.classList.remove('is-open');
     document.body.style.overflow = '';
-    ctxMsgId = null; ctxAuthor = null; ctxBubbleEl = null;
+    ctxMsgId = null; ctxBubbleEl = null;
   }
 
   ctxMask?.addEventListener('click', closeCtxMenu);
@@ -790,9 +502,9 @@ function initChatRoom() {
   // 编辑：将气泡变为 contenteditable
   ctxEdit?.addEventListener('click', () => {
     if (!ctxBubbleEl || !ctxMsgId) { closeCtxMenu(); return; }
-    closeCtxMenu();
     const bubble = ctxBubbleEl;
-    const msgId  = ctxMsgId;
+    const msgId = ctxMsgId;
+    closeCtxMenu();
     bubble.contentEditable = 'true';
     bubble.classList.add('msg__bubble--editing');
     bubble.focus();
@@ -813,19 +525,8 @@ function initChatRoom() {
       bubble.removeEventListener('blur', commitEdit);
       bubble.removeEventListener('keydown', commitEdit);
       if (!newText) return;
-      // 写回 localStorage
-      try {
-        const st = loadChatState();
-        const msgs = st.messagesByConversation[conversation.id];
-        if (msgs) {
-          const msg = msgs.find(m => m.id === msgId);
-          if (msg) {
-            msg.text = newText;
-            st.updatedAt = Date.now();
-            localStorage.setItem('echo-chat-state-v1', JSON.stringify(st));
-          }
-        }
-      } catch { /* ignore */ }
+      try { updateMessage(conversation.id, msgId, { text: newText }); }
+      catch (error) { reportError(error); }
       render();
     }
     bubble.addEventListener('blur', commitEdit);
@@ -837,99 +538,17 @@ function initChatRoom() {
     const msgId = ctxMsgId;
     closeCtxMenu();
     if (!msgId) return;
-    try {
-      const st = loadChatState();
-      const msgs = st.messagesByConversation[conversation.id];
-      if (msgs) {
-        const idx = msgs.findIndex(m => m.id === msgId);
-        if (idx >= 0) msgs.splice(idx, 1);
-        st.updatedAt = Date.now();
-        localStorage.setItem('echo-chat-state-v1', JSON.stringify(st));
-      }
-    } catch { /* ignore */ }
+    try { removeMessages(conversation.id, message => message.id === msgId); }
+    catch (error) { reportError(error); }
     render();
   });
 
-  // 重新生成：删除最后一条 peer 消息，重跑 streamChat
   ctxRegen?.addEventListener('click', () => {
+    const id = ctxMsgId;
     closeCtxMenu();
-    if (isGenerating) return;
-    try {
-      const st = loadChatState();
-      const msgs = st.messagesByConversation[conversation.id];
-      if (msgs) {
-        // 删除最后一条 peer 消息
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].author !== 'mine') { msgs.splice(i, 1); break; }
-        }
-        st.updatedAt = Date.now();
-        localStorage.setItem('echo-chat-state-v1', JSON.stringify(st));
-      }
-    } catch { /* ignore */ }
-    render();
-
-    // 重新触发 AI 流
-    const currentState = loadChatState();
-    const currentConv  = getConversation(conversation.id, currentState);
-    const history      = getMessages(conversation.id, currentState);
-    if (!history.length) return;
-
-    isGenerating = true;
-    input.disabled = true;
-    input.placeholder = '正在回复…';
-
-    const streamMsgId = `${conversation.id}-regen-${Date.now()}`;
-    appendMessage(conversation.id, { id: streamMsgId, author: 'peer', text: '…' });
-    render();
-
-    const msgContainer2 = document.querySelector('#room-msgs');
-    function getLastBubble2() {
-      const bs = msgContainer2?.querySelectorAll('.msg--peer .msg__bubble');
-      return bs ? bs[bs.length - 1] : null;
-    }
-    let regenBubble = getLastBubble2();
-
-    streamChat({
-      conversation: currentConv,
-      historyMessages: history,
-      onChunk: (_, fullText) => {
-        if (regenBubble) {
-          regenBubble.textContent = fullText;
-          requestAnimationFrame(() => {
-            const last = msgContainer2?.lastElementChild;
-            if (last) last.scrollIntoView({ block: 'end', behavior: 'instant' });
-          });
-        }
-      },
-      onDone: (fullText) => {
-        const st = loadChatState();
-        const msgs2 = st.messagesByConversation[conversation.id];
-        if (msgs2) {
-          const ph = msgs2.find(m => m.id === streamMsgId);
-          if (ph) ph.text = fullText || '（无回复）';
-          const conv2 = st.conversations.find(c => c.id === conversation.id);
-          if (conv2 && fullText) { conv2.preview = fullText; }
-        }
-        try { st.updatedAt = Date.now(); localStorage.setItem('echo-chat-state-v1', JSON.stringify(st)); } catch { /* */ }
-        isGenerating = false;
-        input.disabled = false;
-        input.placeholder = '说点什么…';
-        render();
-      },
-      onError: (err) => {
-        const st = loadChatState();
-        const msgs2 = st.messagesByConversation[conversation.id];
-        if (msgs2) {
-          const ph = msgs2.find(m => m.id === streamMsgId);
-          if (ph) ph.text = `⚠ ${err.message}`;
-          try { st.updatedAt = Date.now(); localStorage.setItem('echo-chat-state-v1', JSON.stringify(st)); } catch { /* */ }
-        }
-        isGenerating = false;
-        input.disabled = false;
-        input.placeholder = '说点什么…';
-        render();
-      },
-    });
+    if (isGenerating || !id) return;
+    const message = getMessages(conversation.id).find(m => m.id === id);
+    if (message) void runGeneration({ regenerateMessage: message });
   });
 
   // 给消息气泡绑定长按/右键事件（使用事件委托，render 后自动生效）
@@ -995,52 +614,7 @@ function initChatSettings() {
   const back = document.querySelector('#btn-back');
   if (!back) return;
   const route = parseChatRoute();
-  back.setAttribute('href', chatRoomHref(route.conversationId, route.mode, route.source));
-}
-
-const SETTING_SLIDERS = {
-  'param-temp': {
-    key: 'temperature', min: 0, max: 1.3, step: 0.1,
-    format: (value) => value.toFixed(1),
-  },
-  'param-topp': {
-    key: 'topP', min: 0, max: 1.25, step: 0.01,
-    format: (value) => value.toFixed(2).replace(/0$/, ''),
-  },
-  'param-ctx': {
-    key: 'context', min: 8, max: 68, step: 8,
-    format: (value) => `${value}k`,
-  },
-  'param-freq': {
-    key: 'frequencyPenalty', min: 0, max: 1.2, step: 0.1,
-    format: (value) => value.toFixed(1),
-  },
-  'param-pres': {
-    key: 'presencePenalty', min: 0, max: 1.1, step: 0.1,
-    format: (value) => value.toFixed(1),
-  },
-};
-
-function sliderPercent(value, min, max) {
-  return Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
-}
-
-function updateSliderVisual(row, config, parameter) {
-  const valueNode = row.querySelector('.slider-row__value');
-  const track = row.querySelector('.slider-row__track');
-  const fill = row.querySelector('.slider-row__fill');
-  const knob = row.querySelector('.slider-row__knob');
-  const percent = sliderPercent(parameter.value, config.min, config.max);
-  const formatted = config.format(parameter.value);
-
-  if (valueNode) valueNode.textContent = formatted;
-  if (fill) fill.style.width = `${percent}%`;
-  if (knob) knob.style.left = `${percent}%`;
-  if (track) {
-    track.setAttribute('aria-valuenow', String(parameter.value));
-    track.setAttribute('aria-valuetext', formatted);
-  }
-  if (row) row.dataset.progress = String(Math.round(percent));
+  back.setAttribute('href', route.conversationId ? chatRoomHref(route.conversationId, route.mode, route.source) : chatListHref(route.source));
 }
 
 function initSettingsPage() {
@@ -1141,34 +715,32 @@ function initSettingsPage() {
     if (statusValue) statusValue.textContent = value;
   }
 
-  // 尝试连接 MCP：向配置的 baseUrl 发 OPTIONS/GET 探针
+  let probeController = null;
+  let probeSequence = 0;
   async function tryConnectMcp() {
+    probeController?.abort();
+    const sequence = ++probeSequence;
     const settings = loadSettings();
-    if (!settings.mcpEnabled) { setMcpStatus('off', '未连接'); return; }
-
-    const baseUrl = settings.models?.text?.baseUrl;
-    if (!baseUrl) { setMcpStatus('err', '未配置接口地址'); return; }
-
-    setMcpStatus('connecting', '连接中…');
+    if (!settings.mcpEnabled) { setMcpStatus('off', '未检测'); return; }
+    if (!settings.models.text.baseUrl) { setMcpStatus('err', '未配置接口地址'); return; }
+    const controller = new AbortController(); probeController = controller;
+    const timer = setTimeout(() => controller.abort(), 5000);
+    setMcpStatus('connecting', '检测模型接口…');
     try {
-      // 探针：HEAD /models（无需 body，快速超时）
-      const ctrl = new AbortController();
-      const tid  = setTimeout(() => ctrl.abort(), 5000);
-      const endpoint = `${baseUrl.replace(/\/$/, '')}/models`;
-      const headers  = {};
-      if (settings.models?.text?.apiKey) headers['Authorization'] = `Bearer ${settings.models.text.apiKey}`;
-      const resp = await fetch(endpoint, { method: 'GET', headers, signal: ctrl.signal });
-      clearTimeout(tid);
-      if (resp.ok || resp.status === 401 || resp.status === 403) {
-        // 401/403 表示端点存在（只是没权限），视为可达
-        setMcpStatus('on', '已连接', baseUrl.replace(/https?:\/\//, '').replace(/\/.*/, ''));
-      } else {
-        setMcpStatus('err', `连接失败`, `${resp.status}`);
+      const headers = {};
+      if (settings.models.text.apiKey) headers.Authorization = `Bearer ${settings.models.text.apiKey}`;
+      const response = await fetch(apiEndpoint(settings.models.text.baseUrl, 'models'), { headers, signal: controller.signal });
+      if (sequence !== probeSequence || !loadSettings().mcpEnabled) return;
+      if (response.status === 401 || response.status === 403) setMcpStatus('err', '接口可达，认证失败', String(response.status));
+      else if (!response.ok) setMcpStatus('err', '接口检测失败', String(response.status));
+      else {
+        const json = await response.json();
+        if (!Array.isArray(json.data) && !Array.isArray(json)) throw new Error('无效模型列表');
+        if (sequence === probeSequence && loadSettings().mcpEnabled) setMcpStatus('on', '模型接口可用', 'MCP 未接入');
       }
-    } catch (err) {
-      if (err.name === 'AbortError') setMcpStatus('err', '连接超时');
-      else setMcpStatus('err', '无法访问', '');
-    }
+    } catch (error) {
+      if (sequence === probeSequence && loadSettings().mcpEnabled) setMcpStatus('err', error.name === 'AbortError' ? '检测超时' : '接口检测失败');
+    } finally { clearTimeout(timer); }
   }
 
   // 初始化时根据当前设置决定是否探测
@@ -1180,7 +752,7 @@ function initSettingsPage() {
     const next = !loadSettings().mcpEnabled;
     updateSettings((s) => { s.mcpEnabled = next; });
     if (next) tryConnectMcp();
-    else setMcpStatus('off', '未连接');
+    else { probeSequence++; probeController?.abort(); setMcpStatus('off', '未检测'); }
   });
 
   // ── 颜色选择弹层（font color） ────────────────────────────────────────────
@@ -1275,9 +847,7 @@ function initSettingsPage() {
   const MODEL_PRESETS = {
     text: [
       { name: 'kimi-k2-0711-preview',      baseUrl: 'https://api.moonshot.cn/v1',              tag: 'Moonshot' },
-      { name: 'claude-sonnet-4-5',         baseUrl: 'https://api.anthropic.com/v1',             tag: 'Anthropic' },
       { name: 'gpt-4o',                    baseUrl: 'https://api.openai.com/v1',                tag: 'OpenAI' },
-      { name: 'gemini-2.5-pro',            baseUrl: 'https://generativelanguage.googleapis.com/v1beta', tag: 'Google' },
       { name: 'deepseek-chat',             baseUrl: 'https://api.deepseek.com/v1',              tag: 'DeepSeek' },
       { name: 'qwen3-235b-a22b',           baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', tag: 'Alibaba' },
     ],
@@ -1304,6 +874,12 @@ function initSettingsPage() {
   const modelClose   = document.getElementById('model-sheet-close');
   const keyToggle    = document.getElementById('model-key-toggle');
   let activeModelKey = null;
+  let listController = null;
+  let listSequence = 0;
+  let keyOrigin = '';
+  inputUrl?.addEventListener('change', () => {
+    try { const next = new URL(apiEndpoint(inputUrl.value)).origin; if (next !== keyOrigin && inputKey) inputKey.value = ''; keyOrigin = next; } catch { /* save validates */ }
+  });
 
   keyToggle?.addEventListener('click', () => {
     if (!inputKey) return;
@@ -1314,10 +890,12 @@ function initSettingsPage() {
   });
 
   function openModelSheet(key) {
+    listController?.abort(); listSequence++;
     activeModelKey = key;
     const current = loadSettings().models[key];
     if (modelTitle) modelTitle.textContent = MODEL_TITLE[key] || 'Model';
-    if (inputUrl)   inputUrl.value  = current.baseUrl || '';
+    if (inputUrl) inputUrl.value = current.baseUrl || '';
+    try { keyOrigin = new URL(apiEndpoint(current.baseUrl)).origin; } catch { keyOrigin = ''; }
     if (inputKey) { inputKey.value  = current.apiKey  || ''; inputKey.type = 'password'; }
     if (inputName)  inputName.value = current.name    || '';
     const icon = keyToggle?.querySelector('i');
@@ -1329,7 +907,11 @@ function initSettingsPage() {
         btn.className = 'model-preset-btn';
         btn.innerHTML = `<span class="model-preset-btn__name">${escapeHtml(name)}</span><span class="model-preset-btn__tag">${escapeHtml(tag)}</span>`;
         btn.addEventListener('click', () => {
-          if (inputUrl)  inputUrl.value  = baseUrl;
+          if (inputUrl) {
+            const next = new URL(baseUrl).origin;
+            if (next !== keyOrigin && inputKey) inputKey.value = '';
+            keyOrigin = next; inputUrl.value = baseUrl;
+          }
           if (inputName) inputName.value = name;
           inputKey?.focus();
         });
@@ -1340,6 +922,7 @@ function initSettingsPage() {
   }
 
   function closeModelSheet() {
+    listController?.abort(); listSequence++;
     modelMask?.classList.remove('is-open'); document.body.style.overflow = ''; activeModelKey = null;
   }
 
@@ -1349,10 +932,12 @@ function initSettingsPage() {
     if (!activeModelKey) return;
     const name = inputName?.value.trim(), baseUrl = inputUrl?.value.trim(), apiKey = inputKey?.value.trim();
     if (!name) { inputName?.focus(); return; }
-    updateSettings((s) => { s.models[activeModelKey] = { name, baseUrl, apiKey }; });
+    const savedKey = activeModelKey;
+    try { apiEndpoint(baseUrl); } catch (error) { reportError(error); return; }
+    updateSettings((s) => { s.models[savedKey] = { name, baseUrl, apiKey }; });
     closeModelSheet();
     // 保存后重新探测（只对 text model 有意义）
-    if (activeModelKey === 'text' && loadSettings().mcpEnabled) tryConnectMcp();
+    if (savedKey === 'text' && loadSettings().mcpEnabled) tryConnectMcp();
   });
 
   // 拉取模型列表
@@ -1361,20 +946,25 @@ function initSettingsPage() {
   async function fetchModelList() {
     const url = inputUrl?.value.trim(); const key = inputKey?.value.trim();
     if (!url) { inputUrl?.focus(); if (fetchText) { fetchText.textContent = '请先填写接口地址'; setTimeout(() => { if (fetchText) fetchText.textContent = '拉取列表'; }, 2000); } return; }
+    listController?.abort();
+    const controller = new AbortController(); listController = controller;
+    const sequence = ++listSequence;
+    const timer = setTimeout(() => controller.abort(), 10000);
     if (fetchBtn) fetchBtn.disabled = true;
     if (fetchText) fetchText.textContent = '拉取中…';
     const icon = fetchBtn?.querySelector('i'); icon?.classList.add('spinning');
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (key) headers['Authorization'] = `Bearer ${key}`;
-      const resp = await fetch(`${url.replace(/\/$/, '')}/models`, { headers });
+      const resp = await fetch(apiEndpoint(url, 'models'), { headers, signal: controller.signal });
       if (!resp.ok) throw new Error(`${resp.status}`);
       const json = await resp.json();
+      if (sequence !== listSequence) return;
       const items = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
       if (!items.length) throw new Error('列表为空');
       if (modelPresets) {
         modelPresets.innerHTML = '';
-        const filtered = items.filter((m) => { const id = (m.id||'').toLowerCase(); return !id.includes('embedding')&&!id.includes('moderation')&&!id.includes('tts')&&!id.includes('whisper')&&!id.includes('dall-e'); });
+        const filtered = items.filter((m) => { const id = String(m.id || '').toLowerCase(); return !id.includes('embedding')&&!id.includes('moderation')&&!id.includes('tts')&&!id.includes('whisper')&&!id.includes('dall-e'); });
         (filtered.length ? filtered : items).forEach((m) => {
           const id = m.id || String(m);
           const btn = document.createElement('button'); btn.className = 'model-preset-btn';
@@ -1385,8 +975,8 @@ function initSettingsPage() {
       }
       if (fetchText) fetchText.textContent = `${items.length} 个模型`;
     } catch (err) {
-      if (fetchText) { fetchText.textContent = `失败: ${err.message}`; setTimeout(() => { if (fetchText) fetchText.textContent = '重试'; }, 2500); }
-    } finally { icon?.classList.remove('spinning'); if (fetchBtn) fetchBtn.disabled = false; }
+      if (fetchText && sequence === listSequence) { fetchText.textContent = `失败: ${err.message}`; setTimeout(() => { if (fetchText) fetchText.textContent = '重试'; }, 2500); }
+    } finally { clearTimeout(timer); icon?.classList.remove('spinning'); if (fetchBtn) fetchBtn.disabled = false; }
   }
   fetchBtn?.addEventListener('click', fetchModelList);
   document.getElementById('row-text-model')?.addEventListener('click',  () => openModelSheet('text'));
@@ -1420,12 +1010,7 @@ function buildMemoryCard(mem) {
   article.querySelector('[data-action="delete"]').addEventListener('click', () => {
     if (!window.confirm('删除这条记忆？')) return;
     deleteMemory(mem.id);
-    article.remove();
-    // 若列表空则显示空态
-    const container = document.getElementById('memory-main');
-    if (container && !container.querySelector('.mem-card')) {
-      renderMemoryEmpty(container);
-    }
+
   });
 
   return article;
@@ -1440,7 +1025,7 @@ function renderMemoryEmpty(container) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(str ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
 
 function initMemoryPage() {
@@ -1495,7 +1080,7 @@ function initMemoryPage() {
   });
 
   // 监听聊天室写入（同一标签页内通过 CustomEvent 通知）
-  window.addEventListener('echo-memory-change', render);
+  subscribeToMemories(render);
 
   render();
 }
@@ -1523,7 +1108,7 @@ function initProfilePage() {
       bio:        bioEl?.value.trim()      || profile.bio,
       avatarData: profile.avatarData,
     };
-    saveProfile(next);
+    updateProfile(next);
 
     // 按钮短暂变为"已保存"反馈
     const orig = saveBtn.textContent;
@@ -1541,7 +1126,6 @@ function initProfilePage() {
 function initChatCreatePage() {
   if (page !== 'chat-create.html') return;
 
-  const CHAT_KEY  = 'echo-chat-state-v1';
   const segSingle = document.getElementById('seg-single');
   const segGroup  = document.getElementById('seg-group');
   const submitBtn = document.getElementById('btn-create-submit');
@@ -1574,6 +1158,7 @@ function initChatCreatePage() {
     if (singleMode) singleMode.style.display = isGroup ? 'none' : '';
     if (createForm) createForm.style.display  = isGroup ? 'none' : '';
     if (groupMode)  groupMode.style.display   = isGroup ? 'flex' : 'none';
+    if (submitBtn) submitBtn.disabled = isGroup && selectedIds.size < 2;
     submitBtn && (submitBtn.textContent = isGroup ? '创建群聊' : '创建');
     if (isGroup) {
       buildCharList();
@@ -1592,7 +1177,7 @@ function initChatCreatePage() {
     if (!data) return;
     pendingAvatar = data;
     if (avatarBtn) {
-      avatarBtn.innerHTML = `<img src="${pendingAvatar}" alt="头像"
+      avatarBtn.innerHTML = `<img src="${safeImage(pendingAvatar)}" alt="头像"
         style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
     }
     avatarFile.value = '';
@@ -1601,7 +1186,7 @@ function initChatCreatePage() {
   // ── 群聊：读取单人角色列表并渲染 ────────────────────────────────────────────
   function getAvailableChars() {
     try {
-      const st = JSON.parse(localStorage.getItem(CHAT_KEY) || '{}');
+      const st = loadChatState();
       return (st.conversations || []).filter((c) => c.avatar !== 'group');
     } catch { return []; }
   }
@@ -1623,7 +1208,7 @@ function initChatCreatePage() {
       const avatarEl = document.createElement('div');
       avatarEl.className = 'char-select-item__avatar';
       if (conv.avatarData) {
-        avatarEl.innerHTML = `<img src="${conv.avatarData}" alt="${conv.name}">`;
+        avatarEl.innerHTML = `<img src="${safeImage(conv.avatarData)}" alt="${escapeHtml(conv.name)}">`;
       } else {
         avatarEl.textContent = conv.initial || conv.name.charAt(0).toUpperCase();
       }
@@ -1673,8 +1258,8 @@ function initChatCreatePage() {
     groupPreview.innerHTML = chars.map((c) => `
       <div class="group-avatar-preview__cell">
         ${c.avatarData
-          ? `<img src="${c.avatarData}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`
-          : (c.initial || c.name.charAt(0).toUpperCase())}
+          ? `<img src="${safeImage(c.avatarData)}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`
+          : escapeHtml(c.initial || c.name.charAt(0).toUpperCase())}
       </div>`).join('');
   }
 
@@ -1683,73 +1268,20 @@ function initChatCreatePage() {
   submitBtn.disabled = false;
 
   submitBtn.addEventListener('click', () => {
-    if (isGroupMode) {
-      // 群聊提交
-      if (selectedIds.size < 2) return;
-      const chars    = getAvailableChars().filter((c) => selectedIds.has(c.id));
-      const rawName  = groupNameInput?.value.trim();
-      const groupName= rawName || chars.map((c) => c.name).join('、');
-      const id       = `group-${String(Date.now()).slice(-6)}`;
-
-      try {
-        const stored = localStorage.getItem(CHAT_KEY);
-        if (stored) {
-          const st = JSON.parse(stored);
-          st.conversations.push({
-            id,
-            name:    groupName,
-            initial: groupName.charAt(0).toUpperCase(),
-            avatar:  'group',
-            status:  `${chars.length} 人`,
-            preview: '',
-            time:    '',
-            unread:  false,
-            members: chars.map((c) => c.id),
-          });
-          st.messagesByConversation[id] = [];
-          st.activeConversationId = id;
-          st.updatedAt = Date.now();
-          localStorage.setItem(CHAT_KEY, JSON.stringify(st));
-        }
-      } catch { /* ignore */ }
-
-      window.location.href = chatRoomHref(id, 'list', 'home');
-
-    } else {
-      // 单人提交
-      const name = nameInput?.value.trim();
-      if (!name) {
-        nameInput?.focus();
-        nameInput && (nameInput.style.outline = '2px solid var(--brand-blue)');
-        setTimeout(() => nameInput && (nameInput.style.outline = ''), 1200);
-        return;
+    try {
+      let input;
+      if (isGroupMode) {
+        const chars = getAvailableChars().filter(c => selectedIds.has(c.id));
+        if (chars.length < 2) return;
+        input = { name: groupNameInput?.value.trim() || chars.map(c => c.name).join('、'), avatar: 'group', status: `${chars.length} 人`, members: chars.map(c => c.id) };
+      } else {
+        const name = nameInput?.value.trim();
+        if (!name) { nameInput?.focus(); return; }
+        input = { name, avatar: 'peer', alias: aliasInput?.value.trim() || '', persona: personaInput?.value.trim() || '', avatarData: pendingAvatar || '' };
       }
-      const id      = `${name.toLowerCase().replace(/\s+/g, '-')}-${String(Date.now()).slice(-4)}`;
-      const initial = name.charAt(0).toUpperCase();
-      const alias   = aliasInput?.value.trim()   || '';
-      const persona = personaInput?.value.trim() || '';
-
-      try {
-        const stored = localStorage.getItem(CHAT_KEY);
-        if (stored) {
-          const st = JSON.parse(stored);
-          st.conversations.push({
-            id, name, initial,
-            avatar:  'peer',
-            status:  '在线',
-            preview: '', time: '', unread: false,
-            alias, persona,
-            avatarData: pendingAvatar || '',
-          });
-          st.messagesByConversation[id] = [];
-          st.activeConversationId = id;
-          st.updatedAt = Date.now();
-          localStorage.setItem(CHAT_KEY, JSON.stringify(st));
-        }
-      } catch { /* ignore */ }
-
-      window.location.href = chatRoomHref(id, 'list', 'home');
-    }
+      const created = createConversation(input);
+      window.location.href = chatRoomHref(created.id, 'list', 'home');
+    } catch (error) { reportError(error); }
   });
 }
 
@@ -1778,13 +1310,11 @@ function initHomePage() {
     const img = loadThemeAsset(`icon.${id}`);
     if (!img) return;
     const chip = document.querySelector(`#${id} .feature-card__chip`);
-    if (chip) chip.innerHTML = `<img src="${img}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:var(--icon-chip-radius)">`;
+    if (chip) chip.innerHTML = `<img src="${safeImage(img)}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:var(--icon-chip-radius)">`;
   });
 
   // 功能卡片路由表：id → href
   // chat 卡片从主页进入走 list 模式（有返回键）
-  const state = loadChatState();
-  const activeId = state.activeConversationId || state.conversations[0]?.id || 'nereus';
   const cardRoutes = {
     'btn-diary':        'chat-list.html?from=home',
     'btn-invite':       'chat-list.html?from=home',
@@ -1806,10 +1336,10 @@ function initHomePage() {
 
 function applyAvatarToEl(el, profile) {
   if (profile.avatarData) {
-    el.innerHTML = `<img src="${profile.avatarData}" alt="头像">`;
+    el.innerHTML = `<img src="${safeImage(profile.avatarData)}" alt="头像">`;
   } else {
     const initial = (profile.nickname || '我').charAt(0);
-    el.innerHTML = `<span>${initial}</span>`;
+    el.innerHTML = `<span>${escapeHtml(initial)}</span>`;
   }
 }
 
@@ -1902,7 +1432,7 @@ function initChatListProfileSheet() {
     const file = avatarFile.files?.[0]; if (!file) return;
     pendingAvatarData = await resizeImage(file, 160);
     if (!pendingAvatarData) return;
-    if (avatarBtn) avatarBtn.innerHTML = `<img src="${pendingAvatarData}" alt="头像">
+    if (avatarBtn) avatarBtn.innerHTML = `<img src="${safeImage(pendingAvatarData)}" alt="头像">
       <span class="profile-sheet__avatar-badge" aria-hidden="true"><i class="fa-solid fa-camera"></i></span>`;
     avatarFile.value = '';
   });
@@ -1929,7 +1459,7 @@ function initChatListProfileSheet() {
       avatarData:  pendingAvatarData  !== null ? pendingAvatarData  : current.avatarData,
       coverImage:  pendingCoverImage  !== null ? pendingCoverImage  : current.coverImage,
     };
-    saveProfile(next);
+    updateProfile(next);
     loadAndFill();
     const orig = saveBtn.textContent;
     saveBtn.textContent = '已保存 ✓'; saveBtn.disabled = true;
@@ -1944,7 +1474,7 @@ function initCharProfilePage() {
   const route       = parseChatRoute();
   const state       = loadChatState();
   const conv        = getConversation(route.conversationId, state);
-  const CHAT_KEY    = 'echo-chat-state-v1';
+  if (!conv) { window.location.replace(chatListHref(route.source)); return; }
   const isGroup     = conv.avatar === 'group';
 
   // ── 切换单人 / 群聊 UI ─────────────────────────────────────────────────
@@ -1994,7 +1524,7 @@ function initCharProfilePage() {
             av.style.cssText = 'width:36px;height:36px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;border:1.5px solid rgba(255,255,255,0.8);overflow:hidden;';
             av.style.background = `linear-gradient(135deg,var(--avatar-a-start),var(--avatar-a-end))`;
             if (m.avatarData) {
-              av.innerHTML = `<img src="${m.avatarData}" style="width:100%;height:100%;object-fit:cover;">`;
+              av.innerHTML = `<img src="${safeImage(m.avatarData)}" style="width:100%;height:100%;object-fit:cover;">`;
             } else {
               av.textContent = m.initial || m.name.charAt(0).toUpperCase();
             }
@@ -2019,19 +1549,7 @@ function initCharProfilePage() {
     saveGroupBtn?.addEventListener('click', () => {
       const newName = groupInputName?.value.trim();
       if (!newName) return;
-      try {
-        const stored = localStorage.getItem(CHAT_KEY);
-        if (stored) {
-          const st  = JSON.parse(stored);
-          const idx = st.conversations.findIndex((c) => c.id === conv.id);
-          if (idx >= 0) {
-            st.conversations[idx].name    = newName;
-            st.conversations[idx].initial = newName.charAt(0).toUpperCase();
-            st.updatedAt = Date.now();
-            localStorage.setItem(CHAT_KEY, JSON.stringify(st));
-          }
-        }
-      } catch { /* ignore */ }
+      updateConversation(conv.id, { name: newName });
       fillGroup();
       if (subnavTitle) subnavTitle.textContent = groupInputName?.value.trim() || conv.name;
       const orig = saveGroupBtn.textContent;
@@ -2065,7 +1583,7 @@ function initCharProfilePage() {
       if (inputPersona) inputPersona.value     = c.persona || '';
       if (avatarBtn) {
         if (c.avatarData) {
-          avatarBtn.innerHTML = `<img src="${c.avatarData}" alt="头像">
+          avatarBtn.innerHTML = `<img src="${safeImage(c.avatarData)}" alt="头像">
             <span class="char-hero__avatar-badge" aria-hidden="true"><i class="fa-solid fa-camera"></i></span>`;
         } else {
           if (avatarInit) avatarInit.textContent = c.initial || c.name.charAt(0).toUpperCase();
@@ -2083,7 +1601,7 @@ function initCharProfilePage() {
       const file = avatarFile.files?.[0]; if (!file) return;
       pendingAvatar = await resizeImage(file, 160);
       if (!pendingAvatar) return;
-      if (avatarBtn) avatarBtn.innerHTML = `<img src="${pendingAvatar}" alt="头像">
+      if (avatarBtn) avatarBtn.innerHTML = `<img src="${safeImage(pendingAvatar)}" alt="头像">
         <span class="char-hero__avatar-badge" aria-hidden="true"><i class="fa-solid fa-camera"></i></span>`;
       avatarFile.value = '';
     });
@@ -2092,24 +1610,11 @@ function initCharProfilePage() {
       const name    = inputName?.value.trim()    || conv.name;
       const alias   = inputAlias?.value.trim()   || '';
       const persona = inputPersona?.value.trim() || '';
-      try {
-        const stored = localStorage.getItem(CHAT_KEY);
-        if (stored) {
-          const st  = JSON.parse(stored);
-          const idx = st.conversations.findIndex((c) => c.id === conv.id);
-          if (idx >= 0) {
-            st.conversations[idx].name    = name;
-            st.conversations[idx].initial = name.charAt(0).toUpperCase();
-            st.conversations[idx].alias   = alias;
-            st.conversations[idx].persona = persona;
-            if (pendingAvatar     !== null)      st.conversations[idx].avatarData     = pendingAvatar;
-            if (pendingBubble     !== null)      st.conversations[idx].bubbleColor    = pendingBubble;
-            if (pendingPeerBubble !== undefined) st.conversations[idx].peerBubbleColor= pendingPeerBubble;
-            st.updatedAt = Date.now();
-            localStorage.setItem(CHAT_KEY, JSON.stringify(st));
-          }
-        }
-      } catch { /* storage unavailable */ }
+      const patch = { name, alias, persona };
+      if (pendingAvatar !== null) patch.avatarData = pendingAvatar;
+      if (pendingBubble !== null) patch.bubbleColor = pendingBubble;
+      if (pendingPeerBubble !== undefined) patch.peerBubbleColor = pendingPeerBubble;
+      updateConversation(conv.id, patch);
       fill();
       const orig = saveBtn.textContent;
       saveBtn.textContent = '已保存 ✓'; saveBtn.disabled = true;
@@ -2124,21 +1629,10 @@ function initCharProfilePage() {
     const bindWorldBtn= document.getElementById('btn-bind-world');
 
     function getWorldbooks() {
-      try {
-        const stored = localStorage.getItem('echo-world-v1');
-        if (stored) return JSON.parse(stored);
-      } catch { /* ignore */ }
-      return [
-        { id: 'tide',  name: '潮汐镇', meta: '42 条目' },
-        { id: 'mist',  name: '雾港',   meta: '18 条目' },
-      ];
+      const books = readJson('echo-world-v1', []);
+      return Array.isArray(books) ? books : [];
     }
-    function getCurrentWorldId() {
-      try {
-        const st = JSON.parse(localStorage.getItem(CHAT_KEY) || '{}');
-        return (st.conversations || []).find((c) => c.id === conv.id)?.worldId || null;
-      } catch { return null; }
-    }
+    function getCurrentWorldId() { return getConversation(conv.id)?.worldId || null; }
     function renderWorldList() {
       if (!worldList) return;
       const books  = getWorldbooks();
@@ -2161,8 +1655,8 @@ function initCharProfilePage() {
         btn.innerHTML = `
           <span class="world-option__chip"><i class="fa-solid fa-earth-asia" aria-hidden="true"></i></span>
           <span class="world-option__body">
-            <span class="world-option__name">${book.name}</span>
-            <span class="world-option__meta">${book.meta}</span>
+            <span class="world-option__name">${escapeHtml(book.name)}</span>
+            <span class="world-option__meta">${escapeHtml(book.meta)}</span>
           </span>
           ${active === book.id ? '<i class="fa-solid fa-check world-option__check" aria-hidden="true"></i>' : ''}`;
         btn.addEventListener('click', () => bindWorld(book.id, book.name));
@@ -2170,19 +1664,7 @@ function initCharProfilePage() {
       });
     }
     function bindWorld(worldId, worldName) {
-      try {
-        const stored = localStorage.getItem(CHAT_KEY);
-        if (stored) {
-          const st  = JSON.parse(stored);
-          const idx = st.conversations.findIndex((c) => c.id === conv.id);
-          if (idx >= 0) {
-            st.conversations[idx].worldId   = worldId;
-            st.conversations[idx].worldName = worldName || null;
-            st.updatedAt = Date.now();
-            localStorage.setItem(CHAT_KEY, JSON.stringify(st));
-          }
-        }
-      } catch { /* ignore */ }
+      updateConversation(conv.id, { worldId, worldName: worldName || null });
       if (valWorld) valWorld.textContent = worldName || '未绑定';
       closeWorldSheet();
     }
@@ -2193,7 +1675,7 @@ function initCharProfilePage() {
     worldMask?.addEventListener('click', (e) => { if (e.target === worldMask) closeWorldSheet(); });
     (function initWorldDisplay() {
       try {
-        const st = JSON.parse(localStorage.getItem(CHAT_KEY) || '{}');
+        const st = loadChatState();
         const c  = (st.conversations || []).find((c) => c.id === conv.id);
         if (valWorld) valWorld.textContent = c?.worldName || '未绑定';
       } catch { /* ignore */ }
@@ -2239,7 +1721,7 @@ function initCharProfilePage() {
     function openStyleSheet() {
       if (!styleMask) return;
       try {
-        const st = JSON.parse(localStorage.getItem(CHAT_KEY) || '{}');
+        const st = loadChatState();
         const c  = (st.conversations || []).find((c) => c.id === conv.id);
         applyBubbleActive(c?.bubbleColor || null);
         applyPeerBubbleActive(c?.peerBubbleColor ?? null);
@@ -2251,19 +1733,10 @@ function initCharProfilePage() {
     function closeStyleSheet() {
       if (!styleMask) return;
       if (pendingBubble !== null || pendingPeerBubble !== undefined) {
-        try {
-          const stored = localStorage.getItem(CHAT_KEY);
-          if (stored) {
-            const st  = JSON.parse(stored);
-            const idx = st.conversations.findIndex((c) => c.id === conv.id);
-            if (idx >= 0) {
-              if (pendingBubble !== null) st.conversations[idx].bubbleColor = pendingBubble;
-              if (pendingPeerBubble !== undefined) st.conversations[idx].peerBubbleColor = pendingPeerBubble;
-              st.updatedAt = Date.now();
-              localStorage.setItem(CHAT_KEY, JSON.stringify(st));
-            }
-          }
-        } catch { /* ignore */ }
+        const patch = {};
+        if (pendingBubble !== null) patch.bubbleColor = pendingBubble;
+        if (pendingPeerBubble !== undefined) patch.peerBubbleColor = pendingPeerBubble;
+        updateConversation(conv.id, patch);
         pendingBubble = null; pendingPeerBubble = undefined;
       }
       styleMask.classList.remove('is-open');
@@ -2298,20 +1771,7 @@ function initCharProfilePage() {
   }
   function doDeleteChar() {
     closeDeleteConfirm();
-    try {
-      const stored = localStorage.getItem(CHAT_KEY);
-      if (stored) {
-        const st  = JSON.parse(stored);
-        st.conversations = st.conversations.filter((c) => c.id !== conv.id);
-        delete st.messagesByConversation[conv.id];
-        if (st.drafts) delete st.drafts[conv.id];
-        if (st.activeConversationId === conv.id) {
-          st.activeConversationId = st.conversations[0]?.id || null;
-        }
-        st.updatedAt = Date.now();
-        localStorage.setItem(CHAT_KEY, JSON.stringify(st));
-      }
-    } catch { /* ignore */ }
+    deleteConversation(conv.id);
     window.location.href = 'chat-list.html';
   }
   deleteBtn2?.addEventListener('click', openDeleteConfirm);
@@ -2334,7 +1794,7 @@ function initMomentsPage() {
   // ── Profile 同步 ──────────────────────────────────────────────────────────
   function applyCover(p) {
     if (coverImg && p.coverImage) {
-      coverImg.src = p.coverImage;
+      coverImg.src = safeImage(p.coverImage);
       coverImg.classList.add('is-loaded');
     } else if (coverImg) {
       coverImg.classList.remove('is-loaded');
@@ -2344,7 +1804,7 @@ function initMomentsPage() {
   function applyMyAvatar(p) {
     if (!myAvatar) return;
     if (p.avatarData) {
-      myAvatar.innerHTML = `<img src="${p.avatarData}" alt="${p.nickname}"
+      myAvatar.innerHTML = `<img src="${safeImage(p.avatarData)}" alt="${escapeHtml(p.nickname)}"
         style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
     } else {
       if (myInitial) myInitial.textContent = (p.nickname || '我').charAt(0);
@@ -2372,7 +1832,7 @@ function initMomentsPage() {
     if (post.authorType === 'mine') {
       const myProfile = loadProfile();
       if (myProfile.avatarData) {
-        div.innerHTML = `<img src="${myProfile.avatarData}" alt="${myProfile.nickname}"
+        div.innerHTML = `<img src="${safeImage(myProfile.avatarData)}" alt="${escapeHtml(myProfile.nickname)}"
           style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
       } else {
         const sp = document.createElement('span');
@@ -2386,7 +1846,7 @@ function initMomentsPage() {
     // 角色帖子：从 chat-state 查最新头像
     const chatAvatarData = (() => {
       try {
-        const st = JSON.parse(localStorage.getItem('echo-chat-state-v1') || '{}');
+        const st = loadChatState();
         const conv = (st.conversations || []).find((c) => c.id === post.authorId || c.name === post.authorName);
         return conv?.avatarData || '';
       } catch { return ''; }
@@ -2394,7 +1854,7 @@ function initMomentsPage() {
 
     const avatarSrc = post.authorAvatar || chatAvatarData;
     if (avatarSrc) {
-      div.innerHTML = `<img src="${avatarSrc}" alt="${post.authorName}"
+      div.innerHTML = `<img src="${safeImage(avatarSrc)}" alt="${escapeHtml(post.authorName)}"
         style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
     } else {
       const sp = document.createElement('span');
@@ -2422,7 +1882,7 @@ function initMomentsPage() {
       displayName = loadProfile().nickname || post.authorName || '我';
     } else {
       try {
-        const st = JSON.parse(localStorage.getItem('echo-chat-state-v1') || '{}');
+        const st = loadChatState();
         const conv = (st.conversations || []).find((c) => c.id === post.authorId || c.name === post.authorName);
         if (conv) displayName = conv.name;
       } catch { /* ignore */ }
@@ -2444,7 +1904,7 @@ function initMomentsPage() {
       post.images.forEach((src) => {
         const img = document.createElement('div');
         img.className = 'post__img';
-        if (src) img.style.backgroundImage = `url(${src})`;
+        if (safeImage(src)) img.style.backgroundImage = `url(${safeImage(src)})`;
         grid.appendChild(img);
       });
       body.appendChild(grid);
@@ -2966,7 +2426,6 @@ function initThemePage() {
 function initArchivePage() {
   if (page !== 'archive.html') return;
 
-  const CHAT_KEY    = 'echo-chat-state-v1';
   const ME_ID       = '__me__';  // 虚拟 id，代表「我」的档案
   const charSwitch  = document.getElementById('char-switch');
   const btnEdit     = document.getElementById('btn-edit');
@@ -2984,14 +2443,8 @@ function initArchivePage() {
   let activeId  = ME_ID;
   let isEditing = false;
 
-  function getState() {
-    try { return JSON.parse(localStorage.getItem(CHAT_KEY) || 'null'); }
-    catch { return null; }
-  }
-  function saveState(st) {
-    try { st.updatedAt = Date.now(); localStorage.setItem(CHAT_KEY, JSON.stringify(st)); }
-    catch { /* ignore */ }
-  }
+  function getState() { return loadChatState(); }
+  function saveState(state) { return saveChatState(state); }
 
   // ── 渲染切换条：「我」固定第一位，后跟单人角色 ──────────────────────────
   function renderSwitchBar(conversations) {
@@ -3009,7 +2462,7 @@ function initArchivePage() {
     const meAvSpan = document.createElement('span');
     meAvSpan.className = 'char-chip__avatar';
     if (meProfile.avatarData) {
-      meAvSpan.innerHTML = `<img src="${meProfile.avatarData}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+      meAvSpan.innerHTML = `<img src="${safeImage(meProfile.avatarData)}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
     } else {
       meAvSpan.textContent = (meProfile.nickname || '我').charAt(0);
     }
@@ -3028,7 +2481,7 @@ function initArchivePage() {
       const avatarSpan = document.createElement('span');
       avatarSpan.className = 'char-chip__avatar char-chip__avatar--b';
       if (conv.avatarData) {
-        avatarSpan.innerHTML = `<img src="${conv.avatarData}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+        avatarSpan.innerHTML = `<img src="${safeImage(conv.avatarData)}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
       } else {
         avatarSpan.textContent = conv.initial || conv.name.charAt(0).toUpperCase();
       }
@@ -3221,16 +2674,7 @@ function initArchivePage() {
     if (!pendingDelId) { closeArcDel(); return; }
     const id = pendingDelId;
     closeArcDel();
-    const st = getState();
-    if (st) {
-      st.conversations = st.conversations.filter(c => c.id !== id);
-      delete st.messagesByConversation[id];
-      if (st.drafts) delete st.drafts[id];
-      if (st.activeConversationId === id) {
-        st.activeConversationId = st.conversations[0]?.id || null;
-      }
-      saveState(st);
-    }
+    deleteConversation(id);
     // 切换到「我」或第一个可用角色
     activeId = ME_ID;
     isEditing = false;
@@ -3278,19 +2722,8 @@ function initArchivePage() {
       return;
     }
     const persona = newCharPersona?.value.trim() || '';
-    const id      = `${name.toLowerCase().replace(/\s+/g, '-')}-${String(Date.now()).slice(-4)}`;
-    const currentSt = getState();
-    if (currentSt) {
-      currentSt.conversations.push({
-        id, name,
-        initial: name.charAt(0).toUpperCase(),
-        avatar: 'peer', status: '在线',
-        preview: '', time: '', unread: false,
-        persona, archive: {},
-      });
-      currentSt.activeConversationId = id;
-      saveState(currentSt);
-    }
+    const created = createConversation({ name, persona, avatar: 'peer', archive: {} });
+    const id = created.id;
     closeNewChar();
     const refreshed = getState();
     if (refreshed) {
@@ -3311,26 +2744,14 @@ function initCoupleSpacePage() {
   const myAvatarEl   = document.getElementById('couple-my-avatar');
   const charAvatarEl = document.getElementById('couple-char-avatar');
   const heroNames    = document.getElementById('couple-hero-names');
-  const heroDays     = document.getElementById('couple-hero-days');
   const pickBtn      = document.getElementById('btn-pick-char');
   const pickMask     = document.getElementById('char-pick-mask');
   const pickClose    = document.getElementById('char-pick-close');
   const pickList     = document.getElementById('char-pick-list');
 
   // 读取当前选中角色 id（优先 echo-couple-v1，fallback activeConversationId）
-  function getSavedCharId() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(COUPLE_KEY) || '{}');
-      return saved.charId || null;
-    } catch { return null; }
-  }
-  function saveCharId(id) {
-    try {
-      const saved = JSON.parse(localStorage.getItem(COUPLE_KEY) || '{}');
-      saved.charId = id;
-      localStorage.setItem(COUPLE_KEY, JSON.stringify(saved));
-    } catch { /* ignore */ }
-  }
+  function getSavedCharId() { return readJson(COUPLE_KEY, {}).charId || null; }
+  function saveCharId(id) { writeJson(COUPLE_KEY, { ...readJson(COUPLE_KEY, {}), charId: id }); }
 
   function getCharConv() {
     try {
@@ -3348,10 +2769,10 @@ function initCoupleSpacePage() {
     const conv = getCharConv();
     if (!conv || !charAvatarEl) return;
     if (conv.avatarData) {
-      charAvatarEl.innerHTML = `<img src="${conv.avatarData}" alt="${conv.name}"
+      charAvatarEl.innerHTML = `<img src="${safeImage(conv.avatarData)}" alt="${escapeHtml(conv.name)}"
         style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
     } else {
-      charAvatarEl.innerHTML = `<span class="avatar__initial">${conv.initial || conv.name.charAt(0)}</span>`;
+      charAvatarEl.innerHTML = `<span class="avatar__initial">${escapeHtml(conv.initial || conv.name.charAt(0))}</span>`;
     }
     if (heroNames) {
       const p = loadProfile();
@@ -3362,10 +2783,10 @@ function initCoupleSpacePage() {
   function apply(profile) {
     if (myAvatarEl) {
       if (profile.avatarData) {
-        myAvatarEl.innerHTML = `<img src="${profile.avatarData}" alt="${profile.nickname}"
+        myAvatarEl.innerHTML = `<img src="${safeImage(profile.avatarData)}" alt="${escapeHtml(profile.nickname)}"
           style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
       } else {
-        myAvatarEl.innerHTML = `<span class="avatar__initial">${(profile.nickname || '我').charAt(0)}</span>`;
+        myAvatarEl.innerHTML = `<span class="avatar__initial">${escapeHtml((profile.nickname || '我').charAt(0))}</span>`;
       }
     }
     applyChar();
@@ -3395,15 +2816,15 @@ function initCoupleSpacePage() {
       const av = document.createElement('div');
       av.className = 'char-pick-item__avatar';
       if (conv.avatarData) {
-        av.innerHTML = `<img src="${conv.avatarData}" alt="${conv.name}">`;
+        av.innerHTML = `<img src="${safeImage(conv.avatarData)}" alt="${escapeHtml(conv.name)}">`;
       } else {
         av.textContent = conv.initial || conv.name.charAt(0).toUpperCase();
       }
 
       const body = document.createElement('div');
       body.className = 'char-pick-item__body';
-      body.innerHTML = `<div class="char-pick-item__name">${conv.name}</div>
-        ${conv.alias ? `<div class="char-pick-item__alias">${conv.alias}</div>` : ''}`;
+      body.innerHTML = `<div class="char-pick-item__name">${escapeHtml(conv.name)}</div>
+        ${conv.alias ? `<div class="char-pick-item__alias">${escapeHtml(conv.alias)}</div>` : ''}`;
 
       btn.append(av, body);
       if (conv.id === current?.id) {
@@ -3439,106 +2860,81 @@ function initCoupleSpacePage() {
 // 每轮对话结束后静默调用，提取有价值的信息写入记忆库
 // 不阻塞 UI，失败静默忽略
 
-async function extractMemories(charName, userText, aiText) {
+async function extractMemories(speaker, userText, aiText, conversationId, turnId, signal) {
+  if (!loadSettings().models.text.apiKey || signal?.aborted) return;
   try {
-    const settings = loadSettings();
-    const modelCfg  = settings.models?.text ?? {};
-    const baseUrl   = (typeof modelCfg === 'object' ? modelCfg.baseUrl : '') || '';
-    const apiKey    = (typeof modelCfg === 'object' ? modelCfg.apiKey  : '') || '';
-    const model     = (typeof modelCfg === 'object' ? modelCfg.name    : String(modelCfg)) || 'gpt-4o';
-    if (!apiKey) return; // 未配置 key，跳过
-
-    const endpoint = baseUrl
-      ? `${baseUrl.replace(/\/$/, '')}/chat/completions`
-      : 'https://api.openai.com/v1/chat/completions';
-
-    const systemPrompt = `你是一个对话记忆提取助手。分析用户与角色「${charName}」之间的一段对话，判断是否有值得长期记录的重要信息。
-
-需要记录的信息类型（满足其一即记录）：
-- 约定/承诺（将来要做的事）
-- 两人之间特殊的羁绊、共同经历、里程碑事件
-- 明确表达的喜好、厌恶、习惯
-- 有情感意义的细节（专属称呼、特别的物品/地点/数字等）
-
-不需要记录：
-- 普通寒暄、日常问候
-- 已在对话中完成的临时事务
-- 重复已知的内容
-
-如有值得记录的内容，以 JSON 数组返回，每项格式：
-{"content": "简洁描述（中文，20字以内）", "tags": ["约定"|"事件"|"喜好"|"羁绊"]}
-
-没有值得记录的内容时，返回空数组：[]
-
-只返回 JSON，不要任何解释文字。`;
-
-    const userMessage = `用户说：${userText}\n${charName}说：${aiText}`;
-
-    const resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user',   content: userMessage   },
-        ],
-        temperature: 0.3,
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(20000),
+    const raw = await requestCompletion({
+      signal, temperature: 0.3, timeout: 20,
+      messages: [
+        { role: 'system', content: '提取对话中明确的约定、事件、喜好或羁绊。只返回 JSON 数组，每项为 {"content":"20字以内的事实","tags":["约定"或"事件"或"喜好"或"羁绊"]}。不记录普通寒暄或推测，最多3项，没有则返回 []。' },
+        { role: 'user', content: `用户：${userText.slice(0, 4000)}\n${speaker.name}：${aiText.slice(0, 4000)}` },
+      ],
     });
-
-    if (!resp.ok) return;
-    const json   = await resp.json();
-    const raw    = json.choices?.[0]?.message?.content?.trim() || '';
-    // 提取 JSON 数组（防止模型在前后多输出文字）
-    const match  = raw.match(/\[[\s\S]*\]/);
-    if (!match) return;
-    const items  = JSON.parse(match[0]);
-    if (!Array.isArray(items) || !items.length) return;
-
-    items.forEach((item) => {
-      if (!item?.content) return;
-      saveMemory({
-        id:        Date.now() + Math.random(), // 避免同批次 id 碰撞
-        content:   String(item.content).trim().slice(0, 200),
-        source:    'system',
-        createdAt: new Date().toISOString(),
-        tags:      Array.isArray(item.tags) ? item.tags.map(String).slice(0, 4) : [],
-      });
-    });
-
-    // 触发记忆库页面更新（如果打开着）
-    window.dispatchEvent(new CustomEvent('echo-memory-change'));
-  } catch { /* 静默忽略所有错误，不影响聊天 */ }
+    const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    const items = JSON.parse(cleaned);
+    if (!Array.isArray(items) || !getConversation(conversationId) || !getConversation(speaker.id)) return;
+    for (const item of items.slice(0, 3)) {
+      if (typeof item?.content !== 'string' || !item.content.trim()) continue;
+      saveMemory({ id: Date.now() + Math.random(), content: item.content.trim().slice(0, 200), source: 'system', tags: Array.isArray(item.tags) ? item.tags.filter(tag => ['约定','事件','喜好','羁绊'].includes(tag)).slice(0, 4) : [], conversationId, charId: speaker.id, turnId });
+    }
+  } catch (error) { console.warn('[Echo] 记忆提取未完成：', error.message); }
 }
 
 // ─── 图片压缩工具 ────────────────────────────────────────────────────────────
 // 上传时统一压缩，大幅减小 localStorage 占用
 // maxSize: 最长边像素上限；quality: JPEG 质量 0~1
 function resizeImage(file, maxSize, quality = 0.82) {
-  return new Promise((resolve) => {
+  if (!file || !/^image\/(jpeg|png|webp|gif)$/.test(file.type) || file.size > 15 * 1024 * 1024) {
+    reportError(new Error('请选择不超过 15MB 的 JPG、PNG、WebP 或 GIF 图片。'));
+    return Promise.resolve(null);
+  }
+  return new Promise(resolve => {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
-        const w = Math.round(img.width  * scale);
-        const h = Math.round(img.height * scale);
-        const canvas = document.createElement('canvas');
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', quality));
+    const timer = setTimeout(() => resolve(null), 15000);
+    const finish = value => { clearTimeout(timer); resolve(value); };
+    reader.onerror = () => finish(null);
+    reader.onload = event => {
+      const image = new Image();
+      image.onerror = () => finish(null);
+      image.onload = () => {
+        try {
+          if (!image.width || !image.height || image.width * image.height > 40000000) throw new Error('图片分辨率过大。');
+          const ratio = Math.min(1, maxSize / Math.max(image.width, image.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(image.width * ratio));
+          canvas.height = Math.max(1, Math.round(image.height * ratio));
+          canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+          finish(canvas.toDataURL('image/jpeg', quality));
+        } catch (error) { reportError(error); finish(null); }
       };
-      img.onerror = () => resolve(e.target.result); // 失败时用原图
-      img.src = e.target.result;
+      image.src = event.target.result;
     };
-    reader.onerror = () => resolve(null);
     reader.readAsDataURL(file);
+  });
+}
+
+function initBackupActions() {
+  if (page !== 'world.html') return;
+  document.getElementById('btn-backup')?.addEventListener('click', () => {
+    try {
+      const blob = new Blob([JSON.stringify(createBackup(), null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = url; link.download = `echo-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { reportError(error); }
+  });
+  document.getElementById('btn-restore')?.addEventListener('click', () => {
+    const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json';
+    input.addEventListener('change', async () => {
+      try {
+        const file = input.files?.[0]; if (!file) return;
+        if (file.size > 30 * 1024 * 1024) throw new Error('备份文件过大。');
+        const backup = JSON.parse(await file.text());
+        if (!confirm('将恢复备份中包含的数据。请确认已导出当前备份。API Key 不会从文件导入。')) return;
+        restoreBackup(backup); alert('恢复完成。'); window.location.reload();
+      } catch (error) { reportError(error); }
+    });
+    input.click();
   });
 }
 
@@ -3605,6 +3001,7 @@ function init() {
       root.style.setProperty('--icon-font-size', `${Math.round(icPx * 0.42)}px`);
     } catch { /* ignore */ }
   })();
+  initBackupActions();
   initMainNavigation();
   initHomePage();
   if (page === 'chat-list.html') {
@@ -3624,5 +3021,5 @@ function init() {
   if (page === 'couple-space.html')   initCoupleSpacePage();
 }
 
-init();
+try { init(); } catch (error) { reportError(error); }
 

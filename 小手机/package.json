@@ -1,0 +1,15 @@
+{
+  "name": "echo-phone",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "eslint js tests",
+    "test": "node --test tests/state-api.test.js",
+    "test:browser": "node tests/browser.cjs"
+  },
+  "devDependencies": {
+    "eslint": "10.14.0",
+    "playwright": "1.62.1"
+  }
+}

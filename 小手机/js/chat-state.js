@@ -1,4 +1,7 @@
+import { readJson, writeJson, subscribe, uniqueId, writeImageRecord, hydrateImages } from './storage-state.js';
+
 const STORAGE_KEY = 'echo-chat-state-v1';
+const DRAFTS_KEY = 'echo-chat-drafts-v2';
 
 const DEFAULT_STATE = {
   version: 1,
@@ -62,99 +65,40 @@ function isObject(value) {
 }
 
 function normalizeState(value) {
-  const fallback = cloneDefault();
-  if (!isObject(value)) return fallback;
-
-  const state = {
-    ...fallback,
-    ...value,
-    version: 1,
-    conversations: Array.isArray(value.conversations) && value.conversations.length
-      ? value.conversations.map((conversation) => ({
-        ...fallback.conversations.find((item) => item.id === conversation.id),
-        ...conversation,
-      }))
-      : fallback.conversations,
-    messagesByConversation: isObject(value.messagesByConversation)
-      ? value.messagesByConversation  // 完全信任存储数据，不与 fallback 合并（防止默认消息覆盖真实消息）
-      : fallback.messagesByConversation,
-    drafts: isObject(value.drafts) ? value.drafts : {},
+  if (!isObject(value) || (value.version !== undefined && value.version !== 1) || !Array.isArray(value.conversations) || !isObject(value.messagesByConversation)) {
+    throw new Error('聊天数据结构无效，已保留原数据，请先备份。');
+  }
+  const conversations = value.conversations.map((item) => {
+    if (!isObject(item) || typeof item.id !== 'string' || !item.id || typeof item.name !== 'string') throw new Error('角色数据无效，请先备份。');
+    return { ...item, initial: item.initial || item.name.charAt(0), avatar: item.avatar || 'peer' };
+  });
+  if (new Set(conversations.map(c => c.id)).size !== conversations.length) throw new Error('存在重复角色 ID，请先备份。');
+  const messagesByConversation = Object.create(null);
+  for (const [id, messages] of Object.entries(value.messagesByConversation)) {
+    if (!Array.isArray(messages) || messages.some(m => !isObject(m) || typeof m.text !== 'string')) throw new Error('消息数据无效，请先备份。');
+    messagesByConversation[id] = messages.map(m => ({ ...m }));
+  }
+  return {
+    ...value, version: 1, conversations, messagesByConversation,
+    drafts: isObject(value.drafts) ? { ...value.drafts } : {},
+    activeConversationId: conversations.some(c => c.id === value.activeConversationId) ? value.activeConversationId : (conversations[0]?.id || null),
   };
-
-  const hasActive = state.conversations.some((item) => item.id === state.activeConversationId);
-  if (!hasActive) state.activeConversationId = state.conversations[0].id;
-  return state;
-}
-
-const AVATAR_KEY_PREFIX = 'echo-conv-avatar-v1.';
-
-// 把 conversations 里的 avatarData 抽出存独立 key，主 JSON 里只留占位
-function extractAvatars(state) {
-  if (!Array.isArray(state.conversations)) return state;
-  state.conversations.forEach((conv) => {
-    if (conv.avatarData) {
-      try {
-        window.localStorage.setItem(AVATAR_KEY_PREFIX + conv.id, conv.avatarData);
-      } catch { /* ignore */ }
-      delete conv.avatarData;  // 从主 JSON 里去掉
-    }
-  });
-  return state;
-}
-
-// 读取时把 avatarData 补回
-function restoreAvatars(state) {
-  if (!Array.isArray(state.conversations)) return state;
-  state.conversations.forEach((conv) => {
-    if (!conv.avatarData) {
-      try {
-        const data = window.localStorage.getItem(AVATAR_KEY_PREFIX + conv.id);
-        if (data) conv.avatarData = data;
-      } catch { /* ignore */ }
-    }
-  });
-  return state;
 }
 
 export function saveChatState(nextState) {
   const state = normalizeState(nextState);
   state.updatedAt = Date.now();
-  // 先尝试直接写入
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return state;
-  } catch { /* 空间不足，执行瘦身 */ }
-
-  // 把 avatarData 迁出，再试一次
-  extractAvatars(state);
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return restoreAvatars(state);
-  } catch { /* 仍然失败，截断旧消息 */ }
-
-  // 每个对话只保留最近 50 条消息，再试
-  if (state.messagesByConversation) {
-    Object.keys(state.messagesByConversation).forEach((id) => {
-      const msgs = state.messagesByConversation[id];
-      if (Array.isArray(msgs) && msgs.length > 50) {
-        state.messagesByConversation[id] = msgs.slice(-50);
-      }
-    });
-  }
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch { /* 真的满了，放弃本次写入 */ }
-  return restoreAvatars(state);
+  // One atomic setItem. Never migrate/delete avatars or truncate history as a fallback.
+  return writeImageRecord(STORAGE_KEY, state, 'echo-chat-change');
 }
 
 export function loadChatState() {
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    const state = normalizeState(stored ? JSON.parse(stored) : null);
-    return restoreAvatars(state);
-  } catch {
-    return cloneDefault();
+  const state = normalizeState(hydrateImages(readJson(STORAGE_KEY, cloneDefault)));
+  for (const conv of state.conversations) {
+    if (!conv.avatarData) conv.avatarData = window.localStorage.getItem('echo-conv-avatar-v1.' + conv.id) || '';
   }
+  state.drafts = readJson(DRAFTS_KEY, state.drafts);
+  return state;
 }
 
 export function updateChatState(mutator) {
@@ -164,14 +108,86 @@ export function updateChatState(mutator) {
 }
 
 export function getConversation(id, state = loadChatState()) {
-  return state.conversations.find((conversation) => conversation.id === id)
-    || state.conversations[0];
+  return state.conversations.find(conversation => conversation.id === id) || null;
 }
 
 export function getMessages(id, state = loadChatState()) {
-  return Array.isArray(state.messagesByConversation[id])
-    ? state.messagesByConversation[id]
-    : [];
+  return state.messagesByConversation[id] || [];
+}
+
+export function createConversation(input) {
+  const entry = { status: '在线', preview: '', time: '', unread: false, ...input, id: uniqueId(input.avatar === 'group' ? 'group-' : 'char-') };
+  if (!entry.name?.trim()) throw new Error('请填写角色或群聊名称。');
+  entry.name = entry.name.trim();
+  entry.initial = entry.name.charAt(0).toUpperCase();
+  updateChatState(state => {
+    state.conversations.push(entry);
+    state.messagesByConversation[entry.id] = [];
+    state.activeConversationId = entry.id;
+  });
+  return entry;
+}
+
+export function updateConversation(id, patch) {
+  return updateChatState(state => {
+    const conv = getConversation(id, state);
+    if (!conv) throw new Error('角色已不存在。');
+    Object.assign(conv, patch, { id });
+    if (patch.name !== undefined) conv.initial = String(patch.name).charAt(0).toUpperCase();
+  });
+}
+
+export function deleteConversation(id) {
+  const state = updateChatState(state => {
+    state.conversations = state.conversations.filter(c => c.id !== id);
+    for (const conv of state.conversations) if (Array.isArray(conv.members)) conv.members = conv.members.filter(mid => mid !== id);
+    delete state.messagesByConversation[id];
+    delete state.drafts[id];
+  });
+  try { setDraft(id, ''); } catch { /* stale draft has no visible conversation */ }
+  // Best-effort cleanup only after the canonical conversation deletion commits.
+  try { localStorage.removeItem('echo-conv-avatar-v1.' + id); } catch { /* harmless orphan */ }
+  try {
+    const couple = readJson('echo-couple-v1', {});
+    if (couple.charId === id) writeJson('echo-couple-v1', { ...couple, charId: null });
+  } catch { /* a stale association is also ignored by the reader */ }
+  return state;
+}
+
+export function updateMessage(conversationId, messageId, patch) {
+  return updateChatState(state => {
+    const messages = getMessages(conversationId, state);
+    const message = messages.find(m => m.id === messageId);
+    if (!message) throw new Error('消息已不存在。');
+    Object.assign(message, patch, { id: messageId });
+    updatePreview(state, conversationId);
+  });
+}
+
+export function removeMessages(conversationId, predicate) {
+  return updateChatState(state => {
+    state.messagesByConversation[conversationId] = getMessages(conversationId, state).filter(m => !predicate(m));
+    updatePreview(state, conversationId);
+  });
+}
+
+function updatePreview(state, id) {
+  const conv = getConversation(id, state);
+  const last = getMessages(id, state).filter(m => m.status !== 'pending' && m.status !== 'failed' && m.status !== 'cancelled').at(-1);
+  if (conv) { conv.preview = last?.text || ''; conv.time = last?.time || ''; }
+}
+
+export function replaceReplyTurn(conversationId, turnId, entries, legacyMessageId = null) {
+  return updateChatState(state => {
+    if (!getConversation(conversationId, state)) throw new Error('会话已被删除。');
+    const current = getMessages(conversationId, state);
+    const matches = message => message.author !== 'mine' && (message.turnId === turnId || message.id === legacyMessageId);
+    const first = current.findIndex(matches);
+    const next = current.filter(message => !matches(message));
+    next.splice(first < 0 ? next.length : first, 0, ...entries);
+    state.messagesByConversation[conversationId] = next;
+    updatePreview(state, conversationId);
+  });
 }
 
 export function setActiveConversation(id) {
@@ -190,10 +206,11 @@ export function markConversationRead(id) {
 }
 
 export function setDraft(id, text) {
-  return updateChatState((state) => {
-    if (text) state.drafts[id] = text;
-    else delete state.drafts[id];
-  });
+  const drafts = { ...readJson(DRAFTS_KEY, () => loadChatState().drafts) };
+  if (text) drafts[id] = text;
+  else delete drafts[id];
+  writeJson(DRAFTS_KEY, drafts);
+  return drafts;
 }
 
 export function appendMessage(id, message) {
@@ -203,7 +220,7 @@ export function appendMessage(id, message) {
 
     const messages = state.messagesByConversation[id] || (state.messagesByConversation[id] = []);
     const entry = {
-      id: message.id || `${id}-${Date.now()}`,
+      id: message.id || uniqueId(id + '-'),
       author: message.author === 'mine' ? 'mine' : 'peer',
       text: String(message.text || '').trim(),
       time: message.time || new Intl.DateTimeFormat('zh-CN', {
@@ -218,20 +235,16 @@ export function appendMessage(id, message) {
     if (message.replyCharInitial) entry.replyCharInitial = String(message.replyCharInitial);
     if (message.replyCharAvatar !== undefined) entry.replyCharAvatar = String(message.replyCharAvatar);
     if (message.think)            entry.think            = String(message.think);
+    for (const key of ['turnId', 'status']) if (message[key]) entry[key] = String(message[key]);
     messages.push(entry);
 
-    conversation.preview = messages[messages.length - 1].text;
-    conversation.time = messages[messages.length - 1].time;
+    updatePreview(state, id);
     conversation.unread = false;
   });
 }
 
 export function subscribeToChatState(handler) {
-  const onStorage = (event) => {
-    if (event.key === STORAGE_KEY) handler(loadChatState());
-  };
-  window.addEventListener('storage', onStorage);
-  return () => window.removeEventListener('storage', onStorage);
+  return subscribe(STORAGE_KEY, 'echo-chat-change', handler, loadChatState);
 }
 
 export { STORAGE_KEY };
