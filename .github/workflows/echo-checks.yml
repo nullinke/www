@@ -19,6 +19,7 @@ jobs:
           cache: npm
           cache-dependency-path: 小手机/package-lock.json
       - run: npm ci
+      - run: npm run vendor:tokenizer && git diff --exit-code -- js/vendor/tokenizer
       - run: npm run check
       - run: npm test
       - run: npx playwright install --with-deps chromium

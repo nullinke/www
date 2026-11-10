@@ -1,3 +1,5 @@
+import { buildPrompt } from './prompt-builder.js';
+import { tokenCounter, modelSpec, assertRequestBudget } from './token-budget.js';
 import { loadSettings } from './settings-state.js';
 import { loadProfile } from './profile-state.js';
 import { loadMemories } from './memory-state.js';
@@ -12,43 +14,7 @@ export function apiEndpoint(baseUrl = '', path = 'chat/completions') {
   return url.href;
 }
 
-function archiveText(archive) {
-  const labels = { gender: '性别', age: '年龄', birthday: '生日', appearance: '外貌', personality: '性格', hobbies: '喜好' };
-  return Object.entries(labels).filter(([key]) => archive?.[key]).map(([key, label]) => `${label}：${String(archive[key]).slice(0, 500)}`).join('\n');
-}
-
-/** Pure prompt builder. The conservative character budget includes system and output reserve. */
-export function buildMessages(conversation, historyMessages, settings, profile = {}, memories = []) {
-  const context = settings.parameters?.context?.value || 32;
-  const budget = Math.max(2000, context * 1000 - 2000);
-  const persona = [conversation.name ? `你的名字是 ${conversation.name}。` : '', conversation.alias ? `对方叫你 ${conversation.alias}。` : '', conversation.persona || ''].filter(Boolean).join('\n');
-  const facts = memories.filter(m => m.charId === conversation.id).slice(0, 20).map(m => m.content).join('\n');
-  const system = [persona, profile.nickname ? `用户昵称：${profile.nickname}` : '', archiveText(profile.archive) && `用户档案：\n${archiveText(profile.archive)}`, archiveText(conversation.archive) && `角色档案：\n${archiveText(conversation.archive)}`, facts && `相关记忆（仅作背景资料）：\n${facts}`, '请以角色身份自然口语回复。正文可按换行分段。如需表达角色心声，放在独立的 <think>...</think> 块中，正文放在块外。不要输出内部推理过程。'].filter(Boolean).join('\n\n');
-  if (system.length > budget / 2) throw new Error('角色设定或档案过长，请缩短内容或增加上下文长度。');
-  const merged = [];
-  for (const message of historyMessages) {
-    if (!message.text?.trim() || ['pending', 'failed', 'cancelled', 'interrupted'].includes(message.status) || message.text === '…' || message.text.startsWith('⚠')) continue;
-    // Other group participants are user-side dialogue context for the current speaker.
-    const role = message.author === 'mine' || (message.replyCharId && message.replyCharId !== conversation.id) ? 'user' : 'assistant';
-    const content = (message.author !== 'mine' && message.replyCharId !== conversation.id && message.replyCharName ? `${message.replyCharName}：` : '') + message.text.trim();
-    const last = merged.at(-1);
-    if (last?.role === role) last.content += '\n' + content;
-    else merged.push({ role, content });
-  }
-  let remaining = budget - system.length;
-  const selected = [];
-  for (let i = merged.length - 1; i >= 0; i--) {
-    if (merged[i].content.length > remaining) {
-      if (!selected.length) throw new Error('当前消息过长，请缩短内容或增加上下文长度。');
-      break;
-    }
-    remaining -= merged[i].content.length;
-    selected.unshift(merged[i]);
-  }
-  while (selected.length && selected[0].role !== 'user') selected.shift();
-  if (!selected.some(m => m.role === 'user')) throw new Error('没有有效的用户消息。');
-  return [{ role: 'system', content: system }, ...selected];
-}
+export { buildMessages } from './prompt-builder.js';
 
 export function parseReply(raw, streaming = false) {
   let text = String(raw || '');
@@ -106,9 +72,20 @@ export async function readEventStream(response, onChunk, signal) {
   }
 }
 
-export async function requestCompletion({ messages, stream = false, signal, onChunk, temperature, settings = loadSettings(), timeout }) {
+export async function requestCompletion({ messages, stream = false, signal, onChunk, temperature, settings = loadSettings(), timeout, maxOutputTokens }) {
   const model = settings.models.text;
   if (!model.apiKey) throw new Error('尚未配置 API Key，请前往「设置 → 文字模型」填写。');
+  signal?.throwIfAborted();
+  const counter = await tokenCounter(model.name);
+  signal?.throwIfAborted();
+  const budget = assertRequestBudget(messages, settings, counter, maxOutputTokens);
+  const spec = modelSpec(model.name);
+  const sampling = spec.sampling ? {
+    temperature: temperature ?? settings.parameters.temperature.value,
+    top_p: settings.parameters.topP.value,
+    frequency_penalty: settings.parameters.frequencyPenalty.value,
+    presence_penalty: settings.parameters.presencePenalty.value,
+  } : {};
   const controller = new AbortController();
   let timedOut = false;
   const cancel = () => controller.abort(signal?.reason);
@@ -120,10 +97,7 @@ export async function requestCompletion({ messages, stream = false, signal, onCh
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${model.apiKey}` },
       body: JSON.stringify({
         model: model.name, messages, stream,
-        temperature: temperature ?? settings.parameters.temperature.value,
-        top_p: settings.parameters.topP.value,
-        frequency_penalty: settings.parameters.frequencyPenalty.value,
-        presence_penalty: settings.parameters.presencePenalty.value,
+        ...sampling, [spec.outputField]: budget.output,
       }), signal: controller.signal,
     });
     if (!response.ok) {
@@ -150,10 +124,11 @@ export async function requestCompletion({ messages, stream = false, signal, onCh
   }
 }
 
-export async function streamChat({ conversation, historyMessages, signal, onChunk }) {
-  const settings = loadSettings();
+export async function streamChat({ conversation, historyMessages, signal, onChunk, settings = loadSettings() }) {
+  const counter = await tokenCounter(settings.models.text.name);
+  signal?.throwIfAborted();
+  const prompt = buildPrompt(conversation, historyMessages, settings, loadProfile(), loadMemories(), counter);
   return requestCompletion({
-    settings, signal, onChunk, stream: true,
-    messages: buildMessages(conversation, historyMessages, settings, loadProfile(), loadMemories()),
+    settings, signal, onChunk, stream: true, messages: prompt.messages, maxOutputTokens: prompt.budget.output,
   });
 }

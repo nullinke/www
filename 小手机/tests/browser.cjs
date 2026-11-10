@@ -246,6 +246,65 @@ function serve(directory) {
       const position = await page.locator('.msg__bubble').last().evaluate(node => ({ bottom: node.getBoundingClientRect().bottom, viewport: window.innerHeight, scroll: document.scrollingElement.scrollTop }));
       assert.ok(position.scroll > 0); assert.ok(position.bottom <= position.viewport + 2);
     });
+    await check('known models load only the required local tokenizer on first request', async ({ page, go }) => {
+      const assets = []; let body;
+      page.on('request', request => { if (request.url().includes('/vendor/tokenizer/')) assets.push(request.url()); });
+      await configure(page);
+      await page.evaluate(async () => (await import('./js/settings-state.js')).updateSettings(s => { s.models.text.name = 'gpt-4o'; s.parameters.context.value = 8; }));
+      await page.route('https://mock.test/v1/chat/completions', route => {
+        const payload = route.request().postDataJSON();
+        if (!payload.stream) return route.fulfill({ contentType: 'application/json', body: '{"choices":[{"message":{"content":"[]"}}]}' });
+        body = payload;
+        return route.fulfill({ contentType: 'text/event-stream', body: 'data: {"choices":[{"delta":{"content":"local tokenizer ready"}}]}\n\ndata: [DONE]\n\n' });
+      });
+      await go('chat-room.html'); assert.equal(assets.length, 0);
+      await page.locator('#input-message').fill('你好，世界 <|endoftext|>'); await page.locator('#input-message').press('Enter'); await settle(page);
+      assert.equal(await page.locator('.msg__bubble').last().textContent(), 'local tokenizer ready');
+      assert.ok(assets.some(url => url.endsWith('/engine.js'))); assert.ok(assets.some(url => url.endsWith('/o200k_base.js')));
+      assert.equal(assets.some(url => url.endsWith('/cl100k_base.js')), false); assert.ok(assets.every(url => url.startsWith(base)));
+      assert.equal(body.max_tokens, 2000);
+      const tokens = await page.evaluate(async messages => (await (await import('./js/token-budget.js')).tokenCounter('gpt-4o')).countMessages(messages), body.messages);
+      assert.ok(tokens + body.max_tokens + 256 <= 8000);
+    });
+    await check('oversized input stays intact and unlocks the page without making an API request', async ({ page, go }) => {
+      await configure(page); await page.evaluate(async () => (await import('./js/settings-state.js')).updateSettings(s => { s.parameters.context.value = 8; }));
+      let calls = 0; await page.route('https://mock.test/v1/chat/completions', route => { calls++; return route.abort(); });
+      await go('chat-room.html');
+      const text = 'x'.repeat(9000); await page.locator('#input-message').fill(text); await page.locator('#input-message').press('Enter'); await settle(page);
+      assert.match(await page.locator('.msg__bubble').last().textContent(), /超出上下文预算/); assert.equal(calls, 0);
+      const stored = await page.evaluate(async () => (await import('./js/chat-state.js')).getMessages('nereus').filter(message => message.author === 'mine').at(-1));
+      assert.equal(stored.text, text); assert.equal(await page.locator('#input-message').isEnabled(), true);
+      await page.reload(); await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady);
+      assert.equal(await page.locator('.msg--mine .msg__bubble').last().textContent(), text);
+    });
+    await check('a delayed memory response cannot reattach facts from a regenerated reply', async ({ page, go }) => {
+      await configure(page); let oldExtraction, resolveOld; let replies = 0, extractions = 0;
+      const extractionStarted = new Promise(resolve => { resolveOld = resolve; });
+      await page.route('https://mock.test/v1/chat/completions', async route => {
+        if (route.request().postDataJSON().stream) {
+          replies++;
+          return route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify({ choices: [{ delta: { content: replies === 1 ? 'old promise' : 'new promise' } }] })}\n\ndata: [DONE]\n\n` });
+        }
+        if (++extractions === 1) { oldExtraction = route; resolveOld(); return; }
+        return route.abort();
+      });
+      await go('chat-room.html'); await page.locator('#input-message').fill('make a promise'); await page.locator('#input-message').press('Enter'); await settle(page); await extractionStarted;
+      await page.locator('.msg--peer .msg__bubble').last().dispatchEvent('contextmenu', { clientX: 100, clientY: 100 }); await page.locator('#ctx-regen').click(); await settle(page);
+      const applied = page.waitForFunction(() => window.__lateMemoryApplied);
+      await page.evaluate(async () => {
+        const original = IDBObjectStore.prototype.index;
+        IDBObjectStore.prototype.index = function (...args) { if (this.name === 'messages' && args[0] === 'byTurn') window.__lateMemoryApplied = true; return original.apply(this, args); };
+      });
+      await oldExtraction.fulfill({ contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: '[{"content":"stale promise","tags":["约定"]}]' } }] }) });
+      await applied;
+      // Wait until the IDB guard has completed, rather than just for the network response.
+      const memories = await page.evaluate(async () => {
+        const db = await import('./js/database-state.js');
+        return db.transactionOn(db.database(), ['records', 'messages'], 'readwrite', tx => db.requestResult(tx.objectStore('records').get('echo-memory-v1')));
+      });
+      assert.equal((memories || []).some(item => item.content === 'stale promise'), false);
+      assert.equal(await page.locator('.msg__bubble').last().textContent(), 'new promise');
+    });
     console.log(`Browser checks passed: ${passed}`);
   } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

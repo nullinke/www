@@ -305,6 +305,9 @@ test('the current npm start server serves the actual entry and blocks hidden/pro
     assert.equal((await fetch(base + '/%E5%B0%8F%E6%89%8B%E6%9C%BA/lock-screen.html')).status, 200);
     assert.equal((await fetch(base + '/.git/config')).status, 404);
     assert.equal((await fetch(base + '/%E5%B0%8F%E6%89%8B%E6%9C%BA/node_modules/eslint/package.json')).status, 404);
+    assert.equal((await fetch(base + '/%E5%B0%8F%E6%89%8B%E6%9C%BA/tools/vendor-tokenizer.mjs')).status, 404);
+    const tokenizer = await fetch(base + '/%E5%B0%8F%E6%89%8B%E6%9C%BA/js/vendor/tokenizer/engine.js');
+    assert.equal(tokenizer.status, 200); assert.match(tokenizer.headers.get('content-type'), /javascript/);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 

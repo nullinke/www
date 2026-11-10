@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "check": "eslint js tests",
-    "test": "node --test tests/state-api.test.js",
-    "test:browser": "node tests/browser.cjs"
+    "test": "node --test tests/*.test.js",
+    "test:browser": "node tests/browser.cjs",
+    "vendor:tokenizer": "node tools/vendor-tokenizer.mjs"
   },
   "devDependencies": {
+    "esbuild": "0.28.2",
     "eslint": "10.14.0",
     "fake-indexeddb": "6.2.8",
+    "js-tiktoken": "1.0.21",
     "playwright": "1.62.1"
   }
 }

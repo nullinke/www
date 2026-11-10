@@ -10,7 +10,7 @@ function createServer() {
       let pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
       if (pathname === '/') pathname = '/index.html';
       const parts = pathname.split('/').filter(Boolean);
-      if (parts.some(part => part.startsWith('.') || ['node_modules', 'tests', 'scripts'].includes(part))) { response.writeHead(404); response.end(); return; }
+      if (parts.some(part => part.startsWith('.') || ['node_modules', 'tests', 'scripts', 'tools'].includes(part))) { response.writeHead(404); response.end(); return; }
       if (pathname.endsWith('/')) pathname += 'index.html';
       const file = path.resolve(root, '.' + pathname);
       if (!file.startsWith(root + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { response.writeHead(404); response.end(); return; }

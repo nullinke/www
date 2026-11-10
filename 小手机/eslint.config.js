@@ -1,4 +1,4 @@
-export default [{
+export default [{ ignores: ['js/vendor/**'] }, {
   files: ['js/**/*.js', 'tests/**/*.js'],
   languageOptions: {
     ecmaVersion: 2022,

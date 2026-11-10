@@ -333,12 +333,38 @@ export async function exportBusiness() {
     return new Map([...result].map(([key, value]) => [key, inline(value)]));
   });
 }
-export async function collectUnusedAssets() {
+export async function collectUnusedAssets({ signal, onProgress } = {}) {
   return transact(['records', 'messages', 'assets'], async tx => {
-    const [values, rows, keys] = await Promise.all([requestResult(tx.objectStore('records').getAll()), requestResult(tx.objectStore('messages').getAll()), requestResult(tx.objectStore('assets').getAllKeys())]);
-    const needed = refs([...values, ...rows]);
-    let removed = 0;
-    for (const key of keys) if (!needed.has(key)) { tx.objectStore('assets').delete(key); removed++; }
+    const needed = new Set(); let scanned = 0, removed = 0;
+    for (const storeName of ['records', 'messages']) {
+      await new Promise((resolve, reject) => {
+        const request = tx.objectStore(storeName).openCursor();
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          try {
+            signal?.throwIfAborted();
+            const cursor = request.result;
+            if (!cursor) { resolve(); return; }
+            refs(cursor.value, needed); scanned++;
+            if (scanned % 100 === 0) onProgress?.({ phase: storeName, scanned, removed });
+            cursor.continue();
+          } catch (error) { reject(error); }
+        };
+      });
+    }
+    await new Promise((resolve, reject) => {
+      const request = tx.objectStore('assets').openCursor();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        try {
+          signal?.throwIfAborted();
+          const cursor = request.result;
+          if (!cursor) { resolve(); return; }
+          if (!needed.has(cursor.key)) { cursor.delete(); removed++; }
+          onProgress?.({ phase: 'assets', scanned, removed }); cursor.continue();
+        } catch (error) { reject(error); }
+      };
+    });
     return removed;
   });
 }

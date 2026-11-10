@@ -141,7 +141,7 @@ export function setDraft(id, text) {
     recordStore.put(drafts, DRAFTS_KEY);
   }, { keys: [DRAFTS_KEY] });
 }
-export function appendMessage(id, message, { owner } = {}) {
+export function appendMessage(id, message, { owner, clearDraft = false } = {}) {
   return mutation(id, async (tx, metadata) => {
     await assertOwner(tx, id, owner);
     const store = tx.objectStore('messages'), counter = stats(metadata, id);
@@ -152,9 +152,20 @@ export function appendMessage(id, message, { owner } = {}) {
     if (entry.author !== 'mine') entry.peerOrdinal = counter.peerCount++;
     counter.count++;
     store.add(encodeImages(entry, tx.objectStore('assets')));
+    if (clearDraft) {
+      const recordStore = tx.objectStore('records');
+      const drafts = await requestResult(recordStore.get(DRAFTS_KEY)) || {};
+      delete drafts[id]; recordStore.put(drafts, DRAFTS_KEY);
+    }
     await preview(tx, metadata, id);
     metadata.conversations.find(c => c.id === id).unread = false;
     return entry;
+  }, { keys: clearDraft ? [CHAT_KEY, DRAFTS_KEY] : [CHAT_KEY] });
+}
+export async function findMessage(id, messageId) {
+  return transactionOn(database(), ['messages', 'assets'], 'readonly', async tx => {
+    const row = await requestResult(tx.objectStore('messages').index('byId').get([id, messageId]));
+    return row ? hydrateInTransaction(row, tx) : null;
   });
 }
 export function updateMessage(id, messageId, patch, { owner } = {}) {
@@ -190,7 +201,7 @@ export function deleteConversation(id) {
     if (couple?.charId === id) store.put({ ...couple, charId: null }, 'echo-couple-v1');
   }, { keys: [CHAT_KEY, DRAFTS_KEY, 'echo-couple-v1'], tasksChanged: true });
 }
-export async function loadReplyHistory(id, { message = null, maxChars = 68000 } = {}) {
+export async function loadReplyHistory(id, { message = null, maxChars = 68000, maxMessages = 2048 } = {}) {
   return transactionOn(database(), ['messages', 'assets'], 'readonly', async tx => {
     const store = tx.objectStore('messages');
     let before = Infinity;
@@ -205,7 +216,7 @@ export async function loadReplyHistory(id, { message = null, maxChars = 68000 } 
       request.onerror = () => reject(request.error);
       request.onsuccess = () => {
         const cursor = request.result;
-        if (!cursor || characters >= maxChars) { resolve(); return; }
+        if (!cursor || characters >= maxChars || rows.length >= maxMessages) { resolve(); return; }
         rows.push(cursor.value); characters += cursor.value.text.length; cursor.continue();
       };
     });
@@ -213,6 +224,7 @@ export async function loadReplyHistory(id, { message = null, maxChars = 68000 } 
   });
 }
 export function replaceReplyTurn(id, turnId, entries, legacyMessageId = null, { owner } = {}) {
+  const keys = [CHAT_KEY];
   return mutation(id, async (tx, metadata) => {
     await assertOwner(tx, id, owner);
     if (owner && entries.some(entry => entry.replyCharId && !metadata.conversations.some(c => c.id === entry.replyCharId))) throw new StorageError('回复角色已被删除，未写入过期结果。');
@@ -224,6 +236,12 @@ export function replaceReplyTurn(id, turnId, entries, legacyMessageId = null, { 
     }
     const targets = selected.filter(row => row.author !== 'mine');
     if (!targets.length) throw new StorageError('回复占位或原回复已不存在。');
+    if (targets.some(row => row.status === 'complete')) {
+      const recordStore = tx.objectStore('records');
+      const memories = await requestResult(recordStore.get('echo-memory-v1')) || [];
+      const kept = memories.filter(item => !(item.source === 'system' && item.conversationId === id && item.turnId === turnId));
+      if (kept.length !== memories.length) { recordStore.put(kept, 'echo-memory-v1'); keys.push('echo-memory-v1'); }
+    }
     const start = Math.min(...targets.map(row => row.sequence));
     const tailCount = await requestResult(store.count(IDBKeyRange.bound([id, start], [id, Infinity])));
     const counter = stats(metadata, id);
@@ -244,7 +262,7 @@ export function replaceReplyTurn(id, turnId, entries, legacyMessageId = null, { 
     }
     counter.count += entries.length - targets.length;
     await preview(tx, metadata, id);
-  });
+  }, { keys });
 }
 export function subscribeToChatState(handler) { return subscribe(CHAT_KEY, 'echo-chat-change', handler, loadChatState); }
 export function currentReplyTask(id) { return cachedTask(id); }

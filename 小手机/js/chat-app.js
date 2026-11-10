@@ -1,9 +1,11 @@
-import { streamChat, parseReply, requestCompletion, apiEndpoint } from './api.js';
-import { StorageError, readJson, writeJson, uniqueId, safeImage, createBackup, restoreBackup, initializeStorage } from './storage-state.js';
+import { apiEndpoint } from './api.js';
+import { createReplyRunner } from './reply-service.js';
+import { collectUnusedAssets } from './database-state.js';
+import { StorageError, readJson, writeJson, safeImage, createBackup, restoreBackup, initializeStorage } from './storage-state.js';
 import {
-  defaultChatState, loadMessagePage, messageWindow, withReplyTask, currentReplyTask, loadReplyHistory, recoverReplyTask,
+  defaultChatState, loadMessagePage, messageWindow, currentReplyTask, recoverReplyTask,
   appendMessage,
-  updateConversation, createConversation, deleteConversation, updateMessage, deleteMessage, replaceReplyTurn,
+  updateConversation, createConversation, deleteConversation, updateMessage, deleteMessage,
   getConversation,
   getMessages,
   loadChatState,
@@ -366,75 +368,32 @@ async function initChatRoom() {
   });
   document.querySelector('#btn-input-voice')?.addEventListener('click', sendMessage);
   window.addEventListener('pagehide', () => {
-    activeTask?.abort(); clearTimeout(draftTimer); clearInterval(recoveryTimer); disposed = true; unsubscribe();
+    replyRunner.dispose(); clearTimeout(draftTimer); clearInterval(recoveryTimer); disposed = true; unsubscribe();
     window.removeEventListener('scroll', loadOlder); msgContainer.removeEventListener('scroll', loadOlder);
   }, { once: true });
-  const wait = (ms, signal) => new Promise((resolve, reject) => {
-    if (signal.aborted) { reject(new DOMException('已取消', 'AbortError')); return; }
-    const cancel = () => { clearTimeout(timer); reject(new DOMException('已取消', 'AbortError')); };
-    const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, ms);
-    signal.addEventListener('abort', cancel, { once: true });
+  const replyRunner = createReplyRunner({
+    conversationId: conversation.id,
+    onState({ running, owner }) {
+      isGenerating = running; taskOwner = owner;
+      activeTask = running ? { abort: () => replyRunner.cancel() } : null;
+      if (!running) hidden.clear();
+      render();
+    },
+    onUserCommitted() { input.value = ''; render({ follow: true }); },
+    onChunk({ messageId, text }) {
+      if (disposed) return;
+      const bubble = msgContainer.querySelector(`[data-msg-id="${CSS.escape(messageId)}"] .msg__bubble`);
+      if (bubble) {
+        const follow = nearBottom(); bubble.textContent = text;
+        if (follow) requestAnimationFrame(() => msgContainer.lastElementChild?.scrollIntoView({ block: 'end', behavior: 'instant' }));
+      }
+    },
+    onStaging(entries) { entries.slice(1).forEach(entry => hidden.add(entry.id)); },
+    onReveal(id) { hidden.delete(id); render(); },
   });
-  async function runGeneration({ regenerateMessage = null, userText = '' } = {}) {
-    if (activeTask) return;
-    const controller = new AbortController(); activeTask = controller; isGenerating = true; render();
-    try {
-      await withReplyTask(conversation.id, { signal: controller.signal }, async session => {
-        taskOwner = session.owner;
-        try {
-          if (userText) {
-            await appendMessage(conversation.id, { author: 'mine', text: userText }, { owner: session.owner });
-            input.value = ''; await setDraft(conversation.id, ''); render({ follow: true });
-          }
-          const current = getConversation(conversation.id);
-          let speakers;
-          if (regenerateMessage) {
-            const speaker = getConversation(regenerateMessage.replyCharId || (current.avatar !== 'group' ? current.id : ''));
-            if (!speaker) throw new StorageError('无法确定原回复角色，请发送新消息。');
-            speakers = [speaker];
-          } else speakers = current.avatar === 'group' ? (current.members || []).map(id => getConversation(id)).filter(Boolean) : [current];
-          if (!speakers.length) throw new StorageError('群聊已没有可回复的成员。');
-          for (const speaker of speakers) {
-            if (current.avatar === 'group' && !regenerateMessage) await wait(600 + Math.floor(Math.random() * 800), session.signal);
-            session.signal.throwIfAborted();
-            const context = await loadReplyHistory(current.id, { message: regenerateMessage, maxChars: (loadSettings().parameters.context.value + 2) * 1000 });
-            const turnId = regenerateMessage?.turnId || uniqueId('turn-'), pendingId = uniqueId('message-');
-            const identity = { author: 'peer', replyCharId: speaker.id, replyCharName: speaker.name, replyCharInitial: speaker.initial, turnId };
-            await appendMessage(current.id, { ...identity, id: pendingId, text: '…', status: 'pending' }, { owner: session.owner });
-            try {
-              const raw = await streamChat({
-                conversation: speaker, historyMessages: context, signal: session.signal,
-                onChunk: (_, fullText) => {
-                  const bubble = msgContainer?.querySelector(`[data-msg-id="${CSS.escape(pendingId)}"] .msg__bubble`);
-                  if (bubble) {
-                    const follow = nearBottom();
-                    bubble.textContent = parseReply(fullText, true).text || '…';
-                    if (follow) requestAnimationFrame(() => msgContainer.lastElementChild?.scrollIntoView({ block: 'end', behavior: 'instant' }));
-                  }
-                },
-              });
-              session.signal.throwIfAborted();
-              const reply = parseReply(raw); if (!reply.text) throw new Error('回复没有正文，请重新生成。');
-              const parts = reply.text.split('\n').map(text => text.trim()).filter(Boolean);
-              const time = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
-              const entries = parts.map((text, index) => ({ ...identity, id: uniqueId('message-'), text, time, status: 'complete', ...(index === 0 && reply.think ? { think: reply.think } : {}) }));
-              entries.slice(1).forEach(entry => hidden.add(entry.id));
-              await replaceReplyTurn(current.id, turnId, entries, regenerateMessage && !regenerateMessage.turnId ? regenerateMessage.id : null, { owner: session.owner });
-              for (const entry of entries.slice(1)) { await wait(420, session.signal); hidden.delete(entry.id); render(); }
-              void extractMemories(speaker, context.filter(m => m.author === 'mine').at(-1)?.text || '', reply.text, current.id, turnId, session.signal);
-            } catch (error) {
-              if (error instanceof StorageError) throw error;
-              if (getMessages(current.id).some(m => m.id === pendingId)) await updateMessage(current.id, pendingId, {
-                text: error.name === 'AbortError' ? '⚠ 回复已取消，可重新生成' : `⚠ ${error.message}`,
-                status: error.name === 'AbortError' ? 'cancelled' : 'failed',
-              }, { owner: session.owner });
-              if (error.name === 'AbortError') throw error;
-            }
-          }
-        } finally { taskOwner = null; }
-      });
-    } catch (error) { if (error.name !== 'AbortError' && !disposed) reportError(error); }
-    finally { hidden.clear(); activeTask = null; isGenerating = false; render(); }
+  async function runGeneration(options = {}) {
+    try { await replyRunner.run(options); }
+    catch (error) { if (error.name !== 'AbortError' && !disposed) reportError(error); }
   }
   async function sendMessage() {
     if (isGenerating) return;
@@ -2838,30 +2797,6 @@ function initCoupleSpacePage() {
   pickMask?.addEventListener('click', (e) => { if (e.target === pickMask) closePick(); });
 }
 
-// ─── 自动记忆提取 ─────────────────────────────────────────────────────────────
-// 每轮对话结束后静默调用，提取有价值的信息写入记忆库
-// 不阻塞 UI，失败静默忽略
-
-async function extractMemories(speaker, userText, aiText, conversationId, turnId, signal) {
-  if (!loadSettings().models.text.apiKey || signal?.aborted) return;
-  try {
-    const raw = await requestCompletion({
-      signal, temperature: 0.3, timeout: 20,
-      messages: [
-        { role: 'system', content: '提取对话中明确的约定、事件、喜好或羁绊。只返回 JSON 数组，每项为 {"content":"20字以内的事实","tags":["约定"或"事件"或"喜好"或"羁绊"]}。不记录普通寒暄或推测，最多3项，没有则返回 []。' },
-        { role: 'user', content: `用户：${userText.slice(0, 4000)}\n${speaker.name}：${aiText.slice(0, 4000)}` },
-      ],
-    });
-    const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    const items = JSON.parse(cleaned);
-    if (!Array.isArray(items) || !getConversation(conversationId) || !getConversation(speaker.id)) return;
-    for (const item of items.slice(0, 3)) {
-      if (typeof item?.content !== 'string' || !item.content.trim()) continue;
-      await saveMemory({ id: Date.now() + Math.random(), content: item.content.trim().slice(0, 200), source: 'system', tags: Array.isArray(item.tags) ? item.tags.filter(tag => ['约定','事件','喜好','羁绊'].includes(tag)).slice(0, 4) : [], conversationId, charId: speaker.id, turnId });
-    }
-  } catch (error) { console.warn('[Echo] 记忆提取未完成：', error.message); }
-}
-
 // ─── 图片压缩工具 ────────────────────────────────────────────────────────────
 // 上传时统一压缩，大幅减小 localStorage 占用
 // maxSize: 最长边像素上限；quality: JPEG 质量 0~1
@@ -2903,6 +2838,8 @@ function initBackupActions() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a'); link.href = url; link.download = `echo-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+      // Explicit backup is a suitable maintenance point; chat startup never scans the whole database.
+      void collectUnusedAssets().catch(error => console.warn('[Echo] 资源回收未完成：', error.message));
     } catch (error) { reportError(error); }
   });
   document.getElementById('btn-restore')?.addEventListener('click', () => {
