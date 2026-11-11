@@ -23,5 +23,8 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm audit --audit-level=moderate
-      - run: npx playwright install --with-deps chromium
+      # GitHub-hosted Ubuntu runners already include Chromium's native libraries.
+      # --with-deps invokes apt against security.ubuntu.com, which can fail on
+      # transient DNS outages even though the Playwright browser download works.
+      - run: npx playwright install chromium
       - run: npm run test:browser
