@@ -1,5 +1,5 @@
 import { formatMemoryDate, deleteMemory, filterMemories, subscribeToMemories } from '../memory-state.js';
-import { escapeHtml, page } from '../ui-helpers.js';
+import { escapeHtml, page, showConfirm } from '../ui-helpers.js';
 
 function buildMemoryCard(mem) {
   const article = document.createElement('article');
@@ -23,7 +23,7 @@ function buildMemoryCard(mem) {
   `;
 
   article.querySelector('[data-action="delete"]').addEventListener('click', async () => {
-    if (!window.confirm('删除这条记忆？')) return;
+    if (!await showConfirm('删除后无法恢复这条记忆。', { title: '删除记忆', confirmText: '删除', tone: 'danger' })) return;
     await deleteMemory(mem.id);
 
   });

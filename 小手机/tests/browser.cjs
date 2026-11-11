@@ -129,7 +129,10 @@ function serve(directory) {
       await page.locator('#input-message').fill('unsaved'); await page.locator('#input-message').press('Enter');
       await page.waitForFunction(() => document.querySelector('#input-message').disabled === false);
       assert.equal(await page.evaluate(async () => JSON.stringify([...(await (await import('./js/database-state.js')).exportBusiness())])), previous);
-      assert.equal(await page.locator('#input-message').inputValue(), 'unsaved'); assert.ok(dialogs.some(value => value.includes('事务')));
+      assert.equal(await page.locator('#input-message').inputValue(), 'unsaved');
+      await page.locator('.echo-ui-toast--error').waitFor();
+      assert.match(await page.locator('.echo-ui-toast--error').textContent(), /事务/);
+      assert.deepEqual(dialogs, []);
     });
     await check('model probe distinguishes authentication failure and reruns after save', async ({ page, go }) => {
       await configure(page); await page.evaluate(async () => (await import('./js/settings-state.js')).updateSettings(s => { s.mcpEnabled = true; }));
@@ -164,6 +167,7 @@ function serve(directory) {
       const chooser = await chooserEvent;
       const reloaded = page.waitForEvent('load');
       await chooser.setFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
+      await page.locator('.echo-ui-card__button--danger').click();
       await reloaded; await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady);
       assert.equal(await page.evaluate(async () => (await import('./js/profile-state.js')).loadProfile().archive.hobbies), 'keep-me');
     });
@@ -185,7 +189,7 @@ function serve(directory) {
     });
     await check('memory deletion renders one empty state', async ({ page, go }) => {
       await page.evaluate(async () => await (await import('./js/memory-state.js')).saveMemory({ content: 'delete-me' }));
-      await go('memory.html'); await page.locator('[data-action=delete]').click();
+      await go('memory.html'); await page.locator('[data-action=delete]').click(); await page.locator('.echo-ui-card__button--danger').click();
       await eventually(async () => (await page.locator('.mem-card').count()) === 0);
       assert.equal(await page.locator('.mem-card').count(), 0); assert.equal(await page.locator('#memory-empty').count(), 1);
     });
@@ -337,11 +341,13 @@ function serve(directory) {
       await page.locator('[contenteditable=true]').fill('committed after composition'); await page.locator('[contenteditable=true]').press('Enter');
       await eventually(() => page.evaluate(async () => (await import('./js/chat-state.js')).getMessages('nereus').find(message => message.id === 'nereus-3').text === 'committed after composition'));
     });
-    await check('timeout editing persists and validates values through the existing row', async ({ page, go, promptAnswers, dialogs }) => {
-      await go('settings.html'); promptAnswers.push('90'); await page.locator('#row-timeout').click();
+    await check('timeout editing persists and validates values through the existing row', async ({ page, go }) => {
+      await go('settings.html'); await page.locator('#row-timeout').click();
+      await page.locator('.echo-ui-card__field').fill('90'); await page.locator('.echo-ui-card__button--primary').click();
       assert.equal(await page.locator('#val-timeout').textContent(), '90s');
-      promptAnswers.push('invalid'); await page.locator('#row-timeout').press('Enter');
-      assert.equal(await page.locator('#val-timeout').textContent(), '90s'); assert.ok(dialogs.some(text => text.includes('5–600')));
+      await page.locator('#row-timeout').press('Enter'); await page.locator('.echo-ui-card__field').fill('invalid'); await page.locator('.echo-ui-card__button--primary').click();
+      assert.equal(await page.locator('#val-timeout').textContent(), '90s');
+      await page.locator('.echo-ui-toast--error').waitFor(); assert.match(await page.locator('.echo-ui-toast--error').textContent(), /5–600/);
       await go('settings.html'); assert.equal(await page.locator('#val-timeout').textContent(), '90s');
     });
     await check('automatic memory can be disabled without an API call and manual remembering still works', async ({ page, go }) => {
@@ -390,6 +396,8 @@ function serve(directory) {
     });
     await check('moments support replying, image upload, and deleting a self-authored post', async ({ page, go }) => {
       await go('moments.html'); await page.locator('[data-post-id="post-nereus-1"] .post__action[aria-label=评论]').evaluate(button => button.click());
+      assert.equal(await page.locator('.echo-ui-dialog[data-kind="prompt"]').count(), 1);
+      await page.locator('.echo-ui-card__button').first().click();
       assert.equal(await page.locator('[data-post-id="post-nereus-1"] .post__comments').count(), 0);
       await page.locator('#btn-composer').click(); await page.locator('#compose-textarea').fill('new with image');
       await page.locator('#compose-emoji').click();
@@ -397,7 +405,9 @@ function serve(directory) {
       if (chooser) await chooser.setFiles({ name: 'pixel.png', mimeType: 'image/png', buffer: Buffer.from('not-a-real-image') });
       await page.locator('#compose-submit').click(); await eventually(() => page.locator('.post__text').filter({ hasText: 'new with image' }).count().then(count => count === 1));
       const own = page.locator('.post').filter({ hasText: 'new with image' }); await own.dispatchEvent('contextmenu');
-      const dialogs = page.locator('body'); assert.ok(await dialogs.count());
+      assert.equal(await page.locator('.echo-ui-dialog[data-kind="confirm"]').count(), 1);
+      await page.locator('.echo-ui-card__button--danger').click();
+      await eventually(() => page.locator('.post').filter({ hasText: 'new with image' }).count().then(count => count === 0));
     });
     console.log(`Browser checks passed: ${passed}`);
   } finally { await browser.close(); server.close(); }

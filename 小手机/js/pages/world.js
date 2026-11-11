@@ -1,4 +1,4 @@
-import { page, reportError } from '../ui-helpers.js';
+import { page, reportError, showConfirm, showToast } from '../ui-helpers.js';
 import { createBackup, restoreBackup } from '../storage-state.js';
 import { collectUnusedAssets } from '../database-state.js';
 
@@ -21,8 +21,10 @@ function initBackupActions() {
         const file = input.files?.[0]; if (!file) return;
         if (file.size > 128 * 1024 * 1024) throw new Error('备份文件过大。');
         const backup = JSON.parse(await file.text());
-        if (!confirm('将恢复备份中包含的数据。请确认已导出当前备份。API Key 不会从文件导入。')) return;
-        await restoreBackup(backup); alert('恢复完成。'); window.location.reload();
+        if (!await showConfirm('将恢复备份中包含的数据。请确认已导出当前备份。API Key 不会从文件导入。', { title: '恢复备份', confirmText: '继续恢复', tone: 'danger' })) return;
+        await restoreBackup(backup);
+        void showToast('数据已恢复，正在重新载入。');
+        setTimeout(() => window.location.reload(), 420);
       } catch (error) { reportError(error); }
     });
     input.click();

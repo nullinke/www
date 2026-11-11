@@ -1,4 +1,4 @@
-import { page, escapeHtml } from '../ui-helpers.js';
+import { page, escapeHtml, showConfirm, showPrompt } from '../ui-helpers.js';
 import { safeImage } from '../storage-state.js';
 import { loadProfile, subscribeToProfile } from '../profile-state.js';
 import { loadChatState } from '../chat-state.js';
@@ -174,8 +174,8 @@ function initMomentsPage() {
     commentBtn.className = 'post__action';
     commentBtn.setAttribute('aria-label', '评论');
     commentBtn.innerHTML = '<i class="fa-regular fa-comment" aria-hidden="true"></i>';
-    commentBtn.addEventListener('click', async () => { const value = window.prompt('回复这条动态'); if (value?.trim()) await addComment(post.id, value.trim()); });
-    if (post.authorType === 'mine') article.addEventListener('contextmenu', async event => { event.preventDefault(); if (window.confirm('删除这条动态？')) await deletePost(post.id); });
+    commentBtn.addEventListener('click', async () => { const value = await showPrompt('写下你的回复，和朋友分享这一刻。', { title: '回复这条动态', placeholder: '输入评论…', confirmText: '发送', multiline: true, maxLength: 240 }); if (value?.trim()) await addComment(post.id, value.trim()); });
+    if (post.authorType === 'mine') article.addEventListener('contextmenu', async event => { event.preventDefault(); if (await showConfirm('删除后无法恢复这条动态。', { title: '删除动态', confirmText: '删除', tone: 'danger' })) await deletePost(post.id); });
 
     foot.append(likeBtn, commentBtn);
     body.appendChild(foot);

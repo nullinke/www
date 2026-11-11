@@ -1,6 +1,6 @@
 import { loadSettings, subscribeToSettings, updateSettings } from '../settings-state.js';
 import { apiEndpoint, readResponseJson } from '../api.js';
-import { escapeHtml, reportError } from '../ui-helpers.js';
+import { escapeHtml, reportError, showPrompt } from '../ui-helpers.js';
 
 function initSettingsPage() {
   const root = document.querySelector('#screen-settings');
@@ -85,12 +85,17 @@ function initSettingsPage() {
   });
 
   const timeoutRow = document.getElementById('row-timeout');
-  function editTimeout() {
-    const raw = window.prompt('请求超时（5–600 秒）', String(loadSettings().parameters.timeout));
-    if (raw === null) return;
-    const value = Number(raw.trim());
-    if (!Number.isInteger(value) || value < 5 || value > 600) { reportError(new Error('请输入 5–600 之间的整数秒数。')); return; }
-    updateSettings(settings => { settings.parameters.timeout = value; });
+  let timeoutEditorOpen = false;
+  async function editTimeout() {
+    if (timeoutEditorOpen) return;
+    timeoutEditorOpen = true;
+    try {
+      const raw = await showPrompt('请求超时（5–600 秒）', { title: '编辑请求超时', value: String(loadSettings().parameters.timeout), inputMode: 'numeric', placeholder: '输入 5–600 之间的整数', confirmText: '保存', maxLength: 3 });
+      if (raw === null) return;
+      const value = Number(raw.trim());
+      if (!Number.isInteger(value) || value < 5 || value > 600) { reportError(new Error('请输入 5–600 之间的整数秒数。')); return; }
+      updateSettings(settings => { settings.parameters.timeout = value; });
+    } finally { timeoutEditorOpen = false; }
   }
   if (timeoutRow) {
     timeoutRow.setAttribute('role', 'button'); timeoutRow.tabIndex = 0; timeoutRow.title = '修改请求超时';
