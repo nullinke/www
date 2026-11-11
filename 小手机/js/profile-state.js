@@ -28,14 +28,16 @@ function normalizeProfile(value) {
   if (!value || typeof value !== 'object') return fallback;
   const arc = (value.archive && typeof value.archive === 'object') ? value.archive : {};
   return {
+    ...value,
     version: 1,
     avatarRef: value.avatarRef, coverImageRef: value.coverImageRef,
     nickname:   safeStr(value.nickname,   fallback.nickname,   32),
     id:         safeStr(value.id,         fallback.id,         32),
-    bio:        safeStr(value.bio,        fallback.bio,        200),
+    bio:        typeof value.bio === 'string' ? value.bio.trim().slice(0, 200) : fallback.bio,
     avatarData:  typeof value.avatarData  === 'string' ? value.avatarData  : '',
     coverImage:  typeof value.coverImage  === 'string' ? value.coverImage  : '',
     archive: {
+      ...arc,
       gender:      safeStr(arc.gender,      '', 20),
       age:         safeStr(arc.age,         '', 10),
       birthday:    safeStr(arc.birthday,    '', 20),

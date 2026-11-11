@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "eslint js tests",
+    "check": "eslint js tests tools",
     "test": "node --test tests/*.test.js",
     "test:browser": "node tests/browser.cjs",
-    "vendor:tokenizer": "node tools/vendor-tokenizer.mjs"
+    "vendor:tokenizer": "node tools/vendor-tokenizer.mjs",
+    "benchmark": "node tools/benchmark.cjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
@@ -15,5 +16,13 @@
     "fake-indexeddb": "6.2.8",
     "js-tiktoken": "1.0.21",
     "playwright": "1.62.1"
+  },
+  "overrides": {
+    "eslint@10.14.0": {
+      "minimatch": "11.0.6"
+    },
+    "@eslint/config-array@0.23.5": {
+      "minimatch": "11.0.6"
+    }
   }
 }

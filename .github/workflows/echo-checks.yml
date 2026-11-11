@@ -22,5 +22,6 @@ jobs:
       - run: npm run vendor:tokenizer && git diff --exit-code -- js/vendor/tokenizer
       - run: npm run check
       - run: npm test
+      - run: npm audit --audit-level=moderate
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser

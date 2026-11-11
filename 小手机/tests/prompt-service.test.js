@@ -127,14 +127,14 @@ test('sending a message and clearing its draft roll back together on failure', a
 
 test('regeneration removes derived facts but preserves manual memories and rejects late extraction', async () => {
   await chat.appendMessage('nereus', { id: 'old', author: 'peer', text: 'old reply', status: 'complete', turnId: 'turn', replyCharId: 'nereus' });
-  await memory.saveExtractedMemories({ conversationId: 'nereus', charId: 'nereus', turnId: 'turn', sourceMessageIds: ['old'], items: [{ content: 'old fact', tags: ['约定'] }] });
+  await memory.saveExtractedMemories({ conversationId: 'nereus', charId: 'nereus', turnId: 'turn', sourceMessages: [{ id: 'old', text: 'old reply' }], items: [{ content: 'old fact', tags: ['约定'] }] });
   await memory.saveMemory({ source: 'user', content: 'manual fact', conversationId: 'nereus', charId: 'nereus', turnId: 'turn' });
   assert.equal(memory.loadMemories().length, 2);
   await chat.replaceReplyTurn('nereus', 'turn', [{ id: 'new', author: 'peer', text: 'new reply', status: 'complete', turnId: 'turn', replyCharId: 'nereus' }]);
   assert.deepEqual(memory.loadMemories().map(item => item.content), ['manual fact']);
-  await memory.saveExtractedMemories({ conversationId: 'nereus', charId: 'nereus', turnId: 'turn', sourceMessageIds: ['old'], items: [{ content: 'late old fact' }] });
+  await memory.saveExtractedMemories({ conversationId: 'nereus', charId: 'nereus', turnId: 'turn', sourceMessages: [{ id: 'old', text: 'old reply' }], items: [{ content: 'late old fact' }] });
   assert.deepEqual(memory.loadMemories().map(item => item.content), ['manual fact']);
-  await memory.saveExtractedMemories({ conversationId: 'nereus', charId: 'nereus', turnId: 'turn', sourceMessageIds: ['new'], items: [{ content: 'new fact' }] });
+  await memory.saveExtractedMemories({ conversationId: 'nereus', charId: 'nereus', turnId: 'turn', sourceMessages: [{ id: 'new', text: 'new reply' }], items: [{ content: 'new fact' }] });
   assert.equal(memory.loadMemories().length, 2); assert.ok(memory.loadMemories().some(item => item.sourceMessageIds.includes('new')));
 });
 
@@ -155,4 +155,73 @@ test('vendored tokenizer files match the pinned provenance manifest and include 
     const bytes = readFileSync(new URL(file, root)); assert.equal(bytes.length, expected.bytes); assert.equal(createHash('sha256').update(bytes).digest('hex'), expected.sha256);
   }
   assert.match(readFileSync(new URL('NOTICES.txt', root), 'utf8'), /MIT License/);
+});
+
+test('memory guards compare source text and invalidate derived facts on source edits and deletion', async () => {
+  const user = { id: 'source-user', author: 'mine', text: 'old input' };
+  const reply = { id: 'source-reply', author: 'peer', text: 'reply', status: 'complete', turnId: 't', replyCharId: 'nereus' };
+  await chat.appendMessage('nereus', user); await chat.appendMessage('nereus', reply);
+  const job = { conversationId: 'nereus', charId: 'nereus', turnId: 't', sourceMessages: [reply], sourceUserMessage: user, items: [{ content: 'derived fact' }] };
+  await memory.saveExtractedMemories(job); await memory.saveMemory({ content: 'manual', source: 'user', charId: 'nereus', conversationId: 'nereus' });
+  assert.equal(memory.loadMemories().length, 2);
+  await chat.updateMessage('nereus', user.id, { text: 'edited input' });
+  assert.deepEqual(memory.loadMemories().map(item => item.content), ['manual']);
+  await memory.saveExtractedMemories(job); assert.equal(memory.loadMemories().length, 1);
+  job.sourceUserMessage = { ...user, text: 'edited input' };
+  await chat.updateMessage('nereus', reply.id, { text: 'edited reply' });
+  await memory.saveExtractedMemories(job); assert.equal(memory.loadMemories().length, 1);
+  job.sourceMessages = [{ ...reply, text: 'edited reply' }]; await memory.saveExtractedMemories(job); assert.equal(memory.loadMemories().length, 2);
+  await chat.deleteMessage('nereus', reply.id); assert.deepEqual(memory.loadMemories().map(item => item.content), ['manual']);
+});
+
+test('disabling automatic memory avoids extraction and aborts an extraction already in progress', async () => {
+  settings.updateSettings(s => { s.models.text.apiKey = 'fake'; s.memory.autoExtract = false; });
+  let calls = 0, signal, started;
+  const began = new Promise(resolve => { started = resolve; });
+  const runner = createReplyRunner({ conversationId: 'nereus' }, { chat: async () => 'hello', completion: async options => {
+    calls++; signal = options.signal; started();
+    await new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }));
+  } });
+  await runner.run({ userText: 'no memory' }); assert.equal(calls, 0);
+  settings.updateSettings(s => { s.memory.autoExtract = true; });
+  await runner.run({ userText: 'start memory' }); await began;
+  settings.updateSettings(s => { s.memory.autoExtract = false; }); assert.equal(signal.aborted, true); runner.dispose();
+});
+
+test('JSON and SSE response readers reject oversized data and truncated output and cancel their readers', async () => {
+  const api = await import('../js/api.js');
+  const bytes = new Uint8Array(4 * 1024 * 1024 + 1).fill(120);
+  for (const read of [api.readResponseJson, api.readEventStream]) {
+    let cancelled = false;
+    const response = new Response(new ReadableStream({ start(controller) { controller.enqueue(bytes); }, cancel() { cancelled = true; } }));
+    await assert.rejects(read(response), /响应过大/); assert.equal(cancelled, true);
+  }
+  await assert.rejects(api.readEventStream(new Response('data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}\n\n')), /未完整返回/);
+  settings.updateSettings(s => { s.models.text.apiKey = 'fake'; });
+  globalThis.fetch = async () => new Response('{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}', { headers: { 'Content-Type': 'application/json' } });
+  await assert.rejects(api.requestCompletion({ messages: [{ role: 'user', content: 'hi' }] }), /未完整返回/);
+});
+
+test('cancelling an idle reader does not wait for another network chunk', async () => {
+  const api = await import('../js/api.js');
+  for (const read of [api.readResponseJson, api.readEventStream]) {
+    const controller = new AbortController(); let cancelled = false;
+    const response = new Response(new ReadableStream({ cancel() { cancelled = true; } }));
+    const reading = read(response, ...(read === api.readEventStream ? [undefined, controller.signal] : [controller.signal]));
+    controller.abort(); await assert.rejects(reading, { name: 'AbortError' }); assert.equal(cancelled, true);
+  }
+});
+
+test('a failing page state callback cannot leave the reply runner permanently busy', async () => {
+  let fail = true, finished = 0;
+  const runner = createReplyRunner({ conversationId: 'nereus', onState: () => { if (fail) { fail = false; throw Error('view failed'); } }, onFinish: () => { finished++; } }, { chat: async () => 'recovered' });
+  await assert.rejects(runner.run({ userText: 'first' }), /view failed/); assert.equal(runner.running, false); assert.equal(finished, 1);
+  await runner.run({ userText: 'second' }); assert.equal((await messages('nereus')).at(-1).text, 'recovered'); runner.dispose();
+});
+
+test('SSE accepts standalone CR and a callback cancellation remains cancellation after DONE', async () => {
+  const { readEventStream } = await import('../js/api.js');
+  assert.equal(await readEventStream(new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\r\rdata: [DONE]\r\r')), 'ok');
+  const controller = new AbortController();
+  await assert.rejects(readEventStream(new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'), () => controller.abort(), controller.signal), { name: 'AbortError' });
 });

@@ -1,4 +1,5 @@
 import { subscribe, uniqueId } from './storage-state.js';
+import { assertPlainData, validateBusinessRecord } from './data-validation.js';
 import {
   CHAT_KEY, DRAFTS_KEY, StorageError, cachedRecord, cachedMessages, cachedTask, hydrate,
   transact, transactionOn, database, requestResult, encodeImages, hydrateInTransaction,
@@ -81,6 +82,7 @@ async function mutation(id, run, changes = {}) {
 }
 function stats(meta, id) { return (meta.messageStats ||= {})[id] ||= { count: 0, nextSequence: 0, peerCount: 0 }; }
 function messageEntry(id, message) {
+  assertPlainData(message);
   return {
     ...message, id: message.id || uniqueId('message-'), conversationId: id,
     author: message.author === 'mine' ? 'mine' : 'peer', text: String(message.text || '').trim(),
@@ -111,18 +113,21 @@ export async function createConversation(input) {
   const entry = { avatar: 'peer', status: '在线', preview: '', time: '', unread: false, ...input, id: uniqueId(input.avatar === 'group' ? 'group-' : 'char-') };
   if (!entry.name?.trim()) throw new StorageError('请填写角色或群聊名称。');
   entry.name = entry.name.trim(); entry.initial = entry.name.charAt(0).toUpperCase();
+  validateBusinessRecord(CHAT_KEY, { conversations: [entry], messagesByConversation: {} });
   await mutation(null, (_tx, metadata) => {
     metadata.conversations.push(entry); metadata.activeConversationId = entry.id; stats(metadata, entry.id);
   });
   return entry;
 }
 export function updateConversation(id, patch) {
+  assertPlainData(patch);
   return mutation(id, (_tx, metadata) => {
     const conversation = metadata.conversations.find(c => c.id === id);
     const { archive, ...rest } = patch;
     Object.assign(conversation, rest, { id });
     if (archive) conversation.archive = { ...conversation.archive, ...archive };
     if (patch.name !== undefined) conversation.initial = String(patch.name).charAt(0).toUpperCase();
+    validateBusinessRecord(CHAT_KEY, { conversations: [conversation], messagesByConversation: {} });
   });
 }
 export function setActiveConversation(id) {
@@ -132,6 +137,7 @@ export function markConversationRead(id) {
   return mutation(id, (_tx, meta) => { meta.conversations.find(c => c.id === id).unread = false; });
 }
 export function setDraft(id, text) {
+  if (typeof text !== 'string') throw new StorageError('草稿须为文本。');
   return transact(['records'], async tx => {
     const recordStore = tx.objectStore('records');
     const metadata = await requestResult(recordStore.get(CHAT_KEY));
@@ -144,14 +150,7 @@ export function setDraft(id, text) {
 export function appendMessage(id, message, { owner, clearDraft = false } = {}) {
   return mutation(id, async (tx, metadata) => {
     await assertOwner(tx, id, owner);
-    const store = tx.objectStore('messages'), counter = stats(metadata, id);
-    const entry = messageEntry(id, message);
-    if (owner && entry.replyCharId && !metadata.conversations.some(c => c.id === entry.replyCharId)) throw new StorageError('回复角色已被删除。');
-    if (await requestResult(store.index('byId').getKey([id, entry.id]))) throw new StorageError('消息 ID 已存在，未重复写入。');
-    entry.sequence = counter.nextSequence++;
-    if (entry.author !== 'mine') entry.peerOrdinal = counter.peerCount++;
-    counter.count++;
-    store.add(encodeImages(entry, tx.objectStore('assets')));
+    const entry = await appendInTransaction(tx, metadata, id, message, owner);
     if (clearDraft) {
       const recordStore = tx.objectStore('records');
       const drafts = await requestResult(recordStore.get(DRAFTS_KEY)) || {};
@@ -162,30 +161,85 @@ export function appendMessage(id, message, { owner, clearDraft = false } = {}) {
     return entry;
   }, { keys: clearDraft ? [CHAT_KEY, DRAFTS_KEY] : [CHAT_KEY] });
 }
+async function appendInTransaction(tx, metadata, id, message, owner) {
+  const store = tx.objectStore('messages'), counter = stats(metadata, id);
+  const entry = messageEntry(id, message);
+  validateBusinessRecord(CHAT_KEY, { conversations: [], messagesByConversation: { [id]: [entry] } });
+  if (owner && entry.replyCharId && !metadata.conversations.some(c => c.id === entry.replyCharId)) throw new StorageError('回复角色已被删除。');
+  if (await requestResult(store.index('byId').getKey([id, entry.id]))) throw new StorageError('消息 ID 已存在，未重复写入。');
+  entry.sequence = counter.nextSequence++;
+  if (entry.author !== 'mine') entry.peerOrdinal = counter.peerCount++;
+  counter.count++; store.add(encodeImages(entry, tx.objectStore('assets')));
+  return entry;
+}
+/** Manual remember acknowledges only after the fact, both messages, and draft commit together. */
+export function rememberMessage(id, text, content) {
+  if (!content?.trim()) throw new StorageError('记忆内容不能为空。');
+  return mutation(id, async (tx, metadata) => {
+    const task = await requestResult(tx.objectStore('tasks').get(id));
+    if (task?.expiresAt > Date.now()) throw new StorageError('这个会话正在回复，请稍后再试。');
+    const store = tx.objectStore('records'), list = await requestResult(store.get('echo-memory-v1')) || [];
+    const charId = metadata.conversations.find(c => c.id === id).avatar === 'group' ? '' : id;
+    if (!list.some(item => item.content === content && item.charId === charId)) {
+      list.unshift({ id: Date.now() + Math.random(), content, source: 'user', conversationId: id, charId, createdAt: new Date().toISOString(), tags: [] });
+      store.put(list, 'echo-memory-v1');
+    }
+    await appendInTransaction(tx, metadata, id, { author: 'mine', text });
+    await appendInTransaction(tx, metadata, id, { author: 'peer', text: '✓ 已记住：' + content });
+    const drafts = await requestResult(store.get(DRAFTS_KEY)) || {}; delete drafts[id]; store.put(drafts, DRAFTS_KEY);
+    await preview(tx, metadata, id);
+  }, { keys: [CHAT_KEY, DRAFTS_KEY, 'echo-memory-v1'] });
+}
 export async function findMessage(id, messageId) {
   return transactionOn(database(), ['messages', 'assets'], 'readonly', async tx => {
     const row = await requestResult(tx.objectStore('messages').index('byId').get([id, messageId]));
     return row ? hydrateInTransaction(row, tx) : null;
   });
 }
+async function invalidateMemories(tx, conversationId, row, keys) {
+  const store = tx.objectStore('records'), source = await requestResult(store.get('echo-memory-v1')) || [];
+  const kept = source.filter(item => !(item.source === 'system' && item.conversationId === conversationId && (
+    item.sourceUserMessageId === row.id || item.sourceMessageIds?.includes(row.id) || (row.author !== 'mine' && row.turnId && item.turnId === row.turnId)
+  )));
+  if (kept.length !== source.length) { store.put(kept, 'echo-memory-v1'); keys.push('echo-memory-v1'); }
+}
+async function interruptReply(tx, id) {
+  tx.objectStore('tasks').delete(id);
+  const store = tx.objectStore('messages');
+  const pending = await requestResult(store.index('byStatus').getAll([id, 'pending']));
+  for (const row of pending) store.put({ ...row, status: 'interrupted', text: '⚠ 对话已修改，请重新生成' });
+}
 export function updateMessage(id, messageId, patch, { owner } = {}) {
+  assertPlainData(patch);
+  const keys = [CHAT_KEY];
   return mutation(id, async (tx, metadata) => {
     await assertOwner(tx, id, owner);
     const store = tx.objectStore('messages');
     const current = await requestResult(store.index('byId').get([id, messageId]));
     if (!current) throw new StorageError('消息已不存在。');
     const next = { ...current, ...patch, id: messageId, conversationId: id, sequence: current.sequence };
+    validateBusinessRecord(CHAT_KEY, { conversations: [], messagesByConversation: { [id]: [next] } });
+    if (next.text !== current.text) {
+      await invalidateMemories(tx, id, current, keys);
+      if (current.author === 'mine') await interruptReply(tx, id);
+    }
     store.put(encodeImages(next, tx.objectStore('assets')));
     await preview(tx, metadata, id);
-  });
+  }, { keys, tasksChanged: true });
 }
 export function deleteMessage(id, messageId) {
+  const keys = [CHAT_KEY];
   return mutation(id, async (tx, metadata) => {
     const store = tx.objectStore('messages');
-    const key = await requestResult(store.index('byId').getKey([id, messageId]));
-    if (key) { store.delete(key); stats(metadata, id).count--; }
+    const row = await requestResult(store.index('byId').get([id, messageId]));
+    if (row) {
+      await invalidateMemories(tx, id, row, keys);
+      // Any deletion changes the request history; fence the in-flight snapshot.
+      await interruptReply(tx, id);
+      store.delete([id, row.sequence]); stats(metadata, id).count--;
+    }
     await preview(tx, metadata, id);
-  });
+  }, { keys, tasksChanged: true });
 }
 export function deleteConversation(id) {
   return mutation(id, async (tx, metadata) => {
@@ -224,6 +278,8 @@ export async function loadReplyHistory(id, { message = null, maxChars = 68000, m
   });
 }
 export function replaceReplyTurn(id, turnId, entries, legacyMessageId = null, { owner } = {}) {
+  if (!entries.length) throw new StorageError('回复不能为空。');
+  validateBusinessRecord(CHAT_KEY, { conversations: [], messagesByConversation: { [id]: entries } });
   const keys = [CHAT_KEY];
   return mutation(id, async (tx, metadata) => {
     await assertOwner(tx, id, owner);
@@ -236,6 +292,11 @@ export function replaceReplyTurn(id, turnId, entries, legacyMessageId = null, { 
     }
     const targets = selected.filter(row => row.author !== 'mine');
     if (!targets.length) throw new StorageError('回复占位或原回复已不存在。');
+    for (const entry of entries) {
+      if (entry.author === 'mine' || entry.turnId !== turnId) throw new StorageError('回复轮次无效。');
+      const existing = await requestResult(store.index('byId').get([id, entry.id]));
+      if (existing && !targets.some(row => row.sequence === existing.sequence)) throw new StorageError('回复 ID 与其他消息重复。');
+    }
     if (targets.some(row => row.status === 'complete')) {
       const recordStore = tx.objectStore('records');
       const memories = await requestResult(recordStore.get('echo-memory-v1')) || [];
@@ -291,7 +352,7 @@ export async function withReplyTask(id, { signal } = {}, run) {
     const controller = new AbortController();
     const abort = () => controller.abort(signal?.reason);
     if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
-    let heartbeat;
+    let heartbeat, unsubscribe;
     try {
       controller.signal.throwIfAborted();
       await mutation(id, async (tx, metadata) => {
@@ -303,6 +364,7 @@ export async function withReplyTask(id, { signal } = {}, run) {
         for (const row of pending) tx.objectStore('messages').put({ ...row, status: 'interrupted', text: '⚠ 回复已中断，可重新生成' });
         await preview(tx, metadata, id);
       }, { tasksChanged: true });
+      unsubscribe = subscribeToChatState(() => { if (currentReplyTask(id)?.owner !== owner) controller.abort(); });
       heartbeat = setInterval(() => {
         void transact(['tasks'], async tx => {
           const store = tx.objectStore('tasks'), current = await requestResult(store.get(id));
@@ -312,7 +374,7 @@ export async function withReplyTask(id, { signal } = {}, run) {
       }, 15000);
       return await run({ owner, signal: controller.signal });
     } finally {
-      clearInterval(heartbeat); signal?.removeEventListener('abort', abort);
+      clearInterval(heartbeat); unsubscribe?.(); signal?.removeEventListener('abort', abort);
       try {
         await transact(['tasks', 'messages'], async tx => {
           const store = tx.objectStore('tasks');

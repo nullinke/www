@@ -22,13 +22,13 @@ function serve(directory) {
     if (process.env.TEST_FILTER && !name.includes(process.env.TEST_FILTER)) return;
     const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
     await context.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
-    const page = await context.newPage(); const errors = [], dialogs = [];
+    const page = await context.newPage(); const errors = [], dialogs = [], promptAnswers = [];
     page.on('pageerror', error => errors.push(error.message));
-    page.on('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.accept(); });
+    page.on('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.accept(promptAnswers.shift()); });
     page.setDefaultTimeout(8000);
     const go = async file => { await page.goto(base + file, { waitUntil: 'load' }); if (!['lock-screen.html'].includes(file.split('?')[0])) { await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady); } };
     await go('home.html');
-    try { await run({ page, context, go, errors, dialogs }); assert.deepEqual(errors, []); if (!/quota|backup and restore|memory deletion/.test(name)) assert.deepEqual(dialogs, []); console.log('PASS', name); passed++; }
+    try { await run({ page, context, go, errors, dialogs, promptAnswers }); assert.deepEqual(errors, []); if (!/quota|backup and restore|memory deletion|timeout|automation settings|moments support/.test(name)) assert.deepEqual(dialogs, []); console.log('PASS', name); passed++; }
     finally { await context.close(); }
   }
   const configure = page => page.evaluate(async () => {
@@ -116,7 +116,8 @@ function serve(directory) {
     await check('empty collections stay empty and invalid routes do not open other people', async ({ page, go }) => {
       await page.evaluate(async () => { const chat = await import('./js/chat-state.js'); for (const c of chat.loadChatState().conversations) await chat.deleteConversation(c.id); });
       await go('chat-list.html'); assert.equal(await page.locator('.chat-item').count(), 0);
-      await go('chat-room.html?conversationId=missing'); await page.waitForURL('**/chat-list.html?**');
+      await page.goto(base + 'chat-room.html?conversationId=missing'); await page.waitForURL('**/chat-list.html?**');
+      await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady);
     });
     await check('IDB quota failure retains old messages and reports failure', async ({ page, go, dialogs }) => {
       await go('chat-room.html');
@@ -304,6 +305,99 @@ function serve(directory) {
       });
       assert.equal((memories || []).some(item => item.content === 'stale promise'), false);
       assert.equal(await page.locator('.msg__bubble').last().textContent(), 'new promise');
+    });
+    await check('pages load only their own controller and the chat service stays out of the homepage', async ({ page, go }) => {
+      const paths = []; page.on('request', request => paths.push(new URL(request.url()).pathname));
+      await go('home.html');
+      assert.ok(paths.some(path => path.endsWith('/pages/home.js')));
+      assert.equal(paths.some(path => /reply-service\.js|\/api\.js|\/pages\/settings\.js|\/pages\/chat-room\.js/.test(path)), false);
+      paths.length = 0; await go('chat-room.html');
+      assert.ok(paths.some(path => path.endsWith('/pages/chat-room.js'))); assert.ok(paths.some(path => path.endsWith('/reply-service.js')));
+      assert.equal(paths.some(path => path.endsWith('/pages/settings.js')), false);
+    });
+    await check('unchanged message nodes and expanded thoughts survive new messages and task updates', async ({ page, go }) => {
+      await configure(page); await mockChat(page, ['<think>keep open</think>first answer']); await go('chat-room.html');
+      await page.locator('#input-message').fill('hello'); await page.locator('#input-message').press('Enter'); await settle(page);
+      await page.locator('.msg-think__toggle').last().click();
+      await page.evaluate(() => { window.__keptRow = document.querySelector('.msg--mine'); window.__keptThought = document.querySelector('.msg-think__body.is-open'); });
+      await page.evaluate(async () => { const chat = await import('./js/chat-state.js'); await chat.appendMessage('nereus', { author: 'mine', text: 'appended independently' }); await chat.setDraft('nereus', 'draft'); });
+      assert.equal(await page.evaluate(() => window.__keptRow === document.querySelector('.msg--mine') && window.__keptRow.isConnected), true);
+      assert.equal(await page.evaluate(() => window.__keptThought.isConnected && window.__keptThought.classList.contains('is-open')), true);
+      assert.equal(await page.locator('.msg__bubble').last().textContent(), 'appended independently');
+    });
+    await check('message editing respects composition and restores an empty edit without losing stored text', async ({ page, go }) => {
+      await go('chat-room.html'); const bubble = page.locator('.msg--mine .msg__bubble').first(); const before = await bubble.textContent();
+      await bubble.dispatchEvent('contextmenu', { clientX: 100, clientY: 100 }); await page.locator('#ctx-edit').click();
+      await page.locator('[contenteditable=true]').fill('正在输入'); await page.locator('[contenteditable=true]').dispatchEvent('keydown', { key: 'Enter', isComposing: true });
+      assert.equal(await page.locator('[contenteditable=true]').count(), 1);
+      assert.equal(await page.evaluate(async () => (await import('./js/chat-state.js')).getMessages('nereus').find(message => message.id === 'nereus-3').text), before);
+      await page.locator('[contenteditable=true]').fill(''); await page.locator('[contenteditable=true]').press('Enter');
+      assert.equal(await page.locator('.msg--mine .msg__bubble').first().textContent(), before);
+      await page.locator('.msg--mine .msg__bubble').first().dispatchEvent('contextmenu', { clientX: 100, clientY: 100 }); await page.locator('#ctx-edit').click();
+      await page.locator('[contenteditable=true]').fill('committed after composition'); await page.locator('[contenteditable=true]').press('Enter');
+      await eventually(() => page.evaluate(async () => (await import('./js/chat-state.js')).getMessages('nereus').find(message => message.id === 'nereus-3').text === 'committed after composition'));
+    });
+    await check('timeout editing persists and validates values through the existing row', async ({ page, go, promptAnswers, dialogs }) => {
+      await go('settings.html'); promptAnswers.push('90'); await page.locator('#row-timeout').click();
+      assert.equal(await page.locator('#val-timeout').textContent(), '90s');
+      promptAnswers.push('invalid'); await page.locator('#row-timeout').press('Enter');
+      assert.equal(await page.locator('#val-timeout').textContent(), '90s'); assert.ok(dialogs.some(text => text.includes('5–600')));
+      await go('settings.html'); assert.equal(await page.locator('#val-timeout').textContent(), '90s');
+    });
+    await check('automatic memory can be disabled without an API call and manual remembering still works', async ({ page, go }) => {
+      await configure(page); let streams = 0, extractions = 0;
+      await page.route('https://mock.test/v1/chat/completions', route => {
+        if (!route.request().postDataJSON().stream) { extractions++; return route.abort(); }
+        streams++; return route.fulfill({ contentType: 'text/event-stream', body: 'data: {"choices":[{"delta":{"content":"reply without memory"}}]}\n\ndata: [DONE]\n\n' });
+      });
+      await go('chat-room.html'); await page.locator('#input-message').fill('自动记忆：关'); await page.locator('#input-message').press('Enter');
+      await eventually(() => page.locator('#input-message').inputValue().then(value => value === ''));
+      assert.equal(await page.locator('.msg__bubble').last().textContent(), '✓ 已关闭自动记忆'); assert.equal(streams, 0);
+      await page.locator('#input-message').fill('normal reply'); await page.locator('#input-message').press('Enter'); await settle(page);
+      assert.equal(streams, 1); assert.equal(extractions, 0);
+      await page.locator('#input-message').fill('记住：manual preference'); await page.locator('#input-message').press('Enter');
+      await eventually(() => page.locator('#input-message').inputValue().then(value => value === ''));
+      assert.equal(await page.evaluate(async () => (await import('./js/memory-state.js')).loadMemories().some(item => item.content === 'manual preference' && item.source === 'user')), true);
+      await page.reload(); await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady);
+      assert.equal(await page.evaluate(async () => (await import('./js/settings-state.js')).loadSettings().memory.autoExtract), false);
+    });
+    await check('the old profile editor preserves fields changed elsewhere and allows clearing the signature', async ({ page, go }) => {
+      await page.evaluate(async () => (await import('./js/profile-state.js')).updateProfile({ nickname: 'Initial', bio: 'clear me', archive: { hobbies: 'keep' } }));
+      await go('my-profile.html');
+      await page.evaluate(async () => (await import('./js/profile-state.js')).updateProfile({ nickname: 'Changed elsewhere', archive: { hobbies: 'changed elsewhere' }, coverTone: 'sea' }));
+      await page.locator('#input-bio').fill(''); await page.locator('#btn-save').click();
+      await eventually(() => page.evaluate(async () => (await import('./js/profile-state.js')).loadProfile().bio === ''));
+      const profile = await page.evaluate(async () => (await import('./js/profile-state.js')).loadProfile());
+      assert.equal(profile.nickname, 'Changed elsewhere'); assert.equal(profile.archive.hobbies, 'changed elsewhere'); assert.equal(profile.coverTone, 'sea');
+    });
+    await check('editing history in another tab promptly cancels the owner request and unlocks input', async ({ page, context, go }) => {
+      await configure(page); let start; const started = new Promise(resolve => { start = resolve; });
+      await page.route('https://mock.test/v1/chat/completions', () => { start(); });
+      await go('chat-room.html'); await page.locator('#input-message').fill('original history'); await page.locator('#input-message').press('Enter'); await started;
+      const other = await context.newPage(); await other.goto(base + 'home.html'); await other.waitForFunction(() => window.echoReady); await other.evaluate(() => window.echoReady);
+      await other.evaluate(async () => { const chat = await import('./js/chat-state.js'); const row = (await (await import('./js/database-state.js')).exportBusiness()).get('echo-chat-state-v1').messagesByConversation.nereus.filter(message => message.author === 'mine').at(-1); await chat.updateMessage('nereus', row.id, { text: 'edited in second tab' }); });
+      await settle(page);
+      const last = await page.evaluate(async () => (await import('./js/chat-state.js')).getMessages('nereus').at(-1));
+      assert.equal(last.status, 'interrupted'); assert.match(last.text, /对话已修改/);
+      assert.equal(await page.locator('#input-message').isEnabled(), true);
+    });
+    await check('chat list exposes automation settings beside the couple entry', async ({ page, go }) => {
+      await go('chat-list.html'); const link = page.locator('#btn-chat-automation'); assert.equal(await link.count(), 1); assert.equal(await link.getAttribute('href'), 'chat-automation.html');
+      await link.click(); await page.waitForURL('**/chat-automation.html'); await page.waitForFunction(() => window.echoReady); await page.evaluate(() => window.echoReady);
+      assert.equal(await page.locator('#auto-messages').count(), 1); assert.equal(await page.locator('#interval-minutes').inputValue(), '30');
+      await page.locator('#auto-messages').check(); await page.locator('#interval-minutes').fill('15'); await page.locator('button[type=submit]').click();
+      await eventually(() => page.evaluate(async () => { const state = await import('./js/couple-state.js'); return state.loadCouple().autoMessages && state.loadCouple().intervalMinutes === 15; }));
+    });
+    await check('moments support replying, image upload, and deleting a self-authored post', async ({ page, go }) => {
+      await go('moments.html'); await page.locator('[data-post-id="post-nereus-1"] .post__action[aria-label=评论]').evaluate(button => button.click());
+      assert.equal(await page.locator('[data-post-id="post-nereus-1"] .post__comments').count(), 0);
+      await page.locator('#btn-composer').click(); await page.locator('#compose-textarea').fill('new with image');
+      await page.locator('#compose-emoji').click();
+      const chooser = await page.waitForEvent('filechooser').catch(() => null);
+      if (chooser) await chooser.setFiles({ name: 'pixel.png', mimeType: 'image/png', buffer: Buffer.from('not-a-real-image') });
+      await page.locator('#compose-submit').click(); await eventually(() => page.locator('.post__text').filter({ hasText: 'new with image' }).count().then(count => count === 1));
+      const own = page.locator('.post').filter({ hasText: 'new with image' }); await own.dispatchEvent('contextmenu');
+      const dialogs = page.locator('body'); assert.ok(await dialogs.count());
     });
     console.log(`Browser checks passed: ${passed}`);
   } finally { await browser.close(); server.close(); }

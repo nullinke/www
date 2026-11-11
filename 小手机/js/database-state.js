@@ -1,3 +1,4 @@
+import { validateBusinessRecord } from './data-validation.js';
 /** IndexedDB is the canonical business store. localStorage remains a read-only migration source. */
 export class StorageError extends Error {
   constructor(message, cause) { super(message, { cause }); this.name = 'StorageError'; }
@@ -116,21 +117,14 @@ export async function mutateRecord(key, fallback, mutator, eventKey = key) {
     if (result && typeof result.then === 'function') throw new StorageError('事务内禁止异步业务回调。');
     if (result === NO_CHANGE) return NO_CHANGE;
     const next = result === undefined ? value : result;
+    validateLegacyRecord(key, next);
     store.put(encodeImages(next, tx.objectStore('assets'), new Map([...images].map(([key, image]) => [image, key]))), key);
     return next;
   }, { keys: [eventKey] });
 }
 function validateLegacyRecord(key, value) {
-  if (!value || typeof value !== 'object') throw new StorageError(`旧数据结构无效：${key}`);
-  if (['echo-memory-v1', 'echo-moments-v1', 'echo-world-v1'].includes(key)) {
-    if (!Array.isArray(value)) throw new StorageError(`旧数据列表无效：${key}`);
-  } else if (Array.isArray(value)) throw new StorageError(`旧数据记录无效：${key}`);
-  if (value.version !== undefined && value.version !== 1) throw new StorageError(`不支持的旧数据版本：${key}`);
-  if (key === CHAT_KEY) {
-    if (!Array.isArray(value.conversations) || !value.messagesByConversation || typeof value.messagesByConversation !== 'object' || Array.isArray(value.messagesByConversation)) throw new StorageError('聊天数据结构无效，旧数据未改动。');
-    if (value.conversations.some(c => !c || typeof c.id !== 'string' || !c.id || typeof c.name !== 'string') || new Set(value.conversations.map(c => c.id)).size !== value.conversations.length) throw new StorageError('角色数据无效，旧数据未改动。');
-    for (const rows of Object.values(value.messagesByConversation)) if (!Array.isArray(rows) || rows.some(m => !m || typeof m.text !== 'string' || typeof m.id !== 'string')) throw new StorageError('消息数据无效，旧数据未改动。');
-  }
+  try { validateBusinessRecord(key, value); }
+  catch (error) { throw new StorageError('数据校验失败，原始内容已保留：' + error.message, error); }
 }
 export function readLegacy(defaults = {}) {
   const snapshot = Object.create(null), parsed = new Map(), imageMap = new Map();
@@ -200,8 +194,13 @@ export async function verifyImport(tx, values) {
       const sourceRows = Object.values(expected.messagesByConversation).reduce((sum, list) => sum + list.length, 0);
       if (rows.length !== sourceRows) throw new StorageError('消息数量校验失败，未提交迁移或恢复。');
       const hydrated = await hydrateInTransaction(rows, tx);
+      const byConversation = new Map();
+      for (const row of hydrated) {
+        if (!byConversation.has(row.conversationId)) byConversation.set(row.conversationId, []);
+        byConversation.get(row.conversationId).push(row);
+      }
       for (const [id, source] of Object.entries(expected.messagesByConversation)) {
-        const target = hydrated.filter(row => row.conversationId === id);
+        const target = byConversation.get(id) || [];
         if (target.length !== source.length || target.some((row, index) => JSON.stringify(comparable(row, true)) !== JSON.stringify(comparable(source[index], true)))) throw new StorageError('消息内容校验失败，未提交迁移或恢复。');
       }
       const { messagesByConversation, drafts, messageStats, ...sourceMetadata } = expected;
@@ -259,8 +258,16 @@ export async function refreshStorage(changes = null) {
     if (!db) return;
     const result = await transactionOn(db, ['records', 'messages', 'assets', 'tasks'], 'readonly', async tx => {
       const store = tx.objectStore('records');
-      const [keys, values, leases] = await Promise.all([requestResult(store.getAllKeys()), requestResult(store.getAll()), requestResult(tx.objectStore('tasks').getAll())]);
-      const nextRecords = new Map(keys.map((key, index) => [key, values[index]]));
+      const all = !changes || changes.reset;
+      const nextRecords = all ? new Map() : new Map(records);
+      if (all) {
+        const [keys, values] = await Promise.all([requestResult(store.getAllKeys()), requestResult(store.getAll())]);
+        keys.forEach((key, index) => nextRecords.set(key, values[index]));
+      } else await Promise.all((changes.keys || []).map(async key => {
+        const value = await requestResult(store.get(key));
+        if (value === undefined) nextRecords.delete(key); else nextRecords.set(key, value);
+      }));
+      const leases = all || changes.tasksChanged ? await requestResult(tx.objectStore('tasks').getAll()) : [...tasks.values()];
       const pages = new Map();
       for (const [id, page] of windows) {
         if (!changes || changes.reset || changes.conversationIds?.includes(id)) pages.set(id, await readPageInTransaction(tx, id, { limit: Math.max(100, page.rows.length) }));

@@ -26,6 +26,7 @@ function normalizeItem(item) {
     charId: String(item.charId || ''),
     turnId: String(item.turnId || ''),
     sourceMessageIds: Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds.map(String) : [],
+    sourceUserMessageId: String(item.sourceUserMessageId || ''),
   };
 }
 
@@ -85,20 +86,25 @@ export function subscribeToMemories(handler) {
 export { STORAGE_KEY };
 
 /** Late extraction may only attach to the exact completed reply that still exists. */
-export function saveExtractedMemories({ conversationId, charId, turnId, sourceMessageIds, items }) {
-  if (!sourceMessageIds?.length) return Promise.resolve();
+export function saveExtractedMemories({ conversationId, charId, turnId, sourceMessages, sourceUserMessage, items }) {
+  if (!sourceMessages?.length) return Promise.resolve();
+  const sourceMessageIds = sourceMessages.map(message => message.id);
   return transact(['records', 'messages'], async tx => {
     const store = tx.objectStore('records');
     const meta = await requestResult(store.get(CHAT_KEY));
     if (!meta?.conversations.some(c => c.id === conversationId) || !meta.conversations.some(c => c.id === charId)) return NO_CHANGE;
     const rows = await requestResult(tx.objectStore('messages').index('byTurn').getAll([conversationId, turnId]));
     const completed = rows.filter(row => row.status === 'complete' && row.replyCharId === charId);
-    if (completed.length !== sourceMessageIds.length || !completed.every(row => sourceMessageIds.includes(row.id))) return NO_CHANGE;
+    if (completed.length !== sourceMessages.length || !completed.every(row => sourceMessages.some(source => source.id === row.id && source.text === row.text))) return NO_CHANGE;
+    if (sourceUserMessage) {
+      const current = await requestResult(tx.objectStore('messages').index('byId').get([conversationId, sourceUserMessage.id]));
+      if (!current || current.author !== 'mine' || current.text !== sourceUserMessage.text) return NO_CHANGE;
+    }
     const list = (await requestResult(store.get(STORAGE_KEY)) || []).map(normalizeItem).filter(Boolean);
     let changed = false;
     for (const item of items.slice(0, 3)) {
       if (typeof item?.content !== 'string' || !item.content.trim()) continue;
-      const value = normalizeItem({ id: Date.now() + Math.random(), content: item.content.trim().slice(0, 200), tags: Array.isArray(item.tags) ? item.tags.filter(tag => ['约定','事件','喜好','羁绊'].includes(tag)).slice(0, 4) : [], source: 'system', conversationId, charId, turnId, sourceMessageIds });
+      const value = normalizeItem({ id: Date.now() + Math.random(), content: item.content.trim().slice(0, 200), tags: Array.isArray(item.tags) ? item.tags.filter(tag => ['约定','事件','喜好','羁绊'].includes(tag)).slice(0, 4) : [], source: 'system', conversationId, charId, turnId, sourceMessageIds, sourceUserMessageId: sourceUserMessage?.id });
       if (list.some(existing => existing.charId === charId && existing.content === value.content)) continue;
       list.unshift(value); changed = true;
     }

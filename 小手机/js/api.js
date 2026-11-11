@@ -15,6 +15,35 @@ export function apiEndpoint(baseUrl = '', path = 'chat/completions') {
 }
 
 export { buildMessages } from './prompt-builder.js';
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+function checkFinish(reason) {
+  if (reason === 'length') throw new Error('回复达到输出上限，内容未完整返回，请重新生成。');
+  if (reason === 'content_filter') throw new Error('回复被服务商过滤，请调整内容后重试。');
+}
+/** Bound both JSON bodies and streams, including frames with no newline. */
+export async function readResponseJson(response, signal) {
+  if (!response.body) throw new Error('接口未返回数据。');
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let size = 0, text = '';
+  const cancel = () => { void reader.cancel().catch(() => {}); };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    while (true) {
+      signal?.throwIfAborted();
+      const chunk = await reader.read(); signal?.throwIfAborted();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) throw new Error('接口响应过大，已停止读取。');
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    return JSON.parse(text + decoder.decode());
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    try { await reader.cancel(); } catch { /* closed */ }
+    reader.releaseLock();
+  }
+}
 
 export function parseReply(raw, streaming = false) {
   let text = String(raw || '');
@@ -30,7 +59,9 @@ export async function readEventStream(response, onChunk, signal) {
   if (!response.body) throw new Error('接口未返回响应流。');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = '', text = '', finished = false;
+  let buffer = '', text = '', finished = false, received = 0, previousCR = false;
+  const cancel = () => { void reader.cancel().catch(() => {}); };
+  signal?.addEventListener('abort', cancel, { once: true });
   function frame(raw) {
     const data = raw.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).replace(/^ /, '')).join('\n');
     if (!data) return;
@@ -39,6 +70,7 @@ export async function readEventStream(response, onChunk, signal) {
     try { value = JSON.parse(data); } catch { throw new Error('接口返回的流式数据不完整或格式错误。'); }
     if (value.error) throw new Error(value.error.message || '接口返回错误。');
     const choice = value.choices?.[0];
+    checkFinish(choice?.finish_reason);
     if (typeof choice?.delta?.content === 'string') {
       text += choice.delta.content;
       onChunk?.(choice.delta.content, text);
@@ -49,9 +81,15 @@ export async function readEventStream(response, onChunk, signal) {
     while (!finished) {
       signal?.throwIfAborted();
       const { done, value } = await reader.read();
-      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-      // Normalize CRLF after combining chunks (a CRLF may itself cross chunks).
-      buffer = buffer.replace(/\r\n/g, '\n');
+      signal?.throwIfAborted();
+      received += value?.byteLength || 0;
+      if (received > MAX_RESPONSE_BYTES) throw new Error('接口响应过大，已停止读取。');
+      const decoded = done ? decoder.decode() : decoder.decode(value, { stream: true });
+      if (decoded) {
+        // SSE accepts LF, CRLF and CR, including CRLF split between chunks.
+        buffer += (previousCR && decoded.startsWith('\n') ? decoded.slice(1) : decoded).replace(/\r\n?/g, '\n');
+        previousCR = decoded.endsWith('\r');
+      }
       let boundary;
       while ((boundary = buffer.indexOf('\n\n')) >= 0) {
         const raw = buffer.slice(0, boundary);
@@ -64,9 +102,11 @@ export async function readEventStream(response, onChunk, signal) {
         if (!finished) throw new Error('回复流意外中断，请重新生成。');
       }
     }
+    signal?.throwIfAborted();
     if (!text.trim()) throw new Error('接口返回了空回复。');
     return text;
   } finally {
+    signal?.removeEventListener('abort', cancel);
     try { await reader.cancel(); } catch { /* already closed */ }
     reader.releaseLock();
   }
@@ -102,17 +142,19 @@ export async function requestCompletion({ messages, stream = false, signal, onCh
     });
     if (!response.ok) {
       let detail = '';
-      try { const value = await response.json(); detail = value.error?.message || value.message || ''; } catch { /* non-JSON error */ }
+      try { const value = await readResponseJson(response, controller.signal); detail = value.error?.message || value.message || ''; } catch { /* non-JSON error */ }
       throw new Error(`API ${response.status}${detail ? '：' + String(detail).slice(0, 300) : ''}`);
     }
-    const type = response.headers.get('content-type') || '';
+    const type = (response.headers.get('content-type') || '').toLowerCase();
     if (stream && type.includes('text/event-stream')) return await readEventStream(response, onChunk, controller.signal);
     if (!type.includes('application/json')) throw new Error('接口返回格式不受支持，请使用 OpenAI 兼容接口。');
-    const json = await response.json();
+    const json = await readResponseJson(response, controller.signal);
     if (json.error) throw new Error(json.error.message || '接口返回错误。');
+    checkFinish(json.choices?.[0]?.finish_reason);
     const text = json.choices?.[0]?.message?.content;
     if (typeof text !== 'string' || !text.trim()) throw new Error('接口返回了空回复。');
     onChunk?.(text, text);
+    controller.signal.throwIfAborted();
     return text;
   } catch (error) {
     if (timedOut) throw new Error('请求超时，请检查网络或增大超时设置。');

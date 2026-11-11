@@ -20,6 +20,7 @@ const DEFAULT_SETTINGS = {
     timeout: 60,
   },
   mcpEnabled: true,
+  memory: { autoExtract: true },
   theme: {
     iconSize:    50,       // 0~100，对应小/中/大
     iconShape:   'round',  // 'round' | 'square'
@@ -94,6 +95,7 @@ function normalizeSettings(value) {
       timeout: Number.isFinite(timeout) ? Math.round(Math.min(600, Math.max(5, timeout))) : fallback.parameters.timeout,
     },
     mcpEnabled: typeof value.mcpEnabled === 'boolean' ? value.mcpEnabled : fallback.mcpEnabled,
+    memory: { autoExtract: typeof value.memory?.autoExtract === 'boolean' ? value.memory.autoExtract : true },
     theme: (function() {
       const t = isRecord(value.theme) ? value.theme : {};
       return {

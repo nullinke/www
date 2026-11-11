@@ -1,3 +1,4 @@
+import { assertPlainData } from './data-validation.js';
 import {
   StorageError, isBusinessKey, cachedRecord, hydrate, mutateRecord,
   exportBusiness, database, transact, importBusiness, verifyImport, requestResult,
@@ -53,6 +54,7 @@ export async function createBackup() {
   return { format: 'echo-backup', version: 1, storage: 'indexeddb-v1', createdAt: new Date().toISOString(), credentialsIncluded: false, warnings, data };
 }
 function prepareBackup(backup) {
+  try { assertPlainData(backup); } catch (error) { throw new StorageError('备份校验失败：' + error.message, error); }
   if (backup?.format !== 'echo-backup' || backup.version !== 1 || !backup.data || typeof backup.data !== 'object' || Array.isArray(backup.data)) throw new StorageError('备份格式不正确。');
   const entries = Object.entries(backup.data);
   if (entries.length > 10000 || entries.some(([key, value]) => !BACKUP_KEYS.test(key) || typeof value !== 'string')) throw new StorageError('备份包含无效数据。');
@@ -80,6 +82,7 @@ function prepareBackup(backup) {
     local.set(key, value);
   }
   const chat = business.get('echo-chat-state-v1');
+  if (chat && !business.has('echo-chat-drafts-v2')) business.set('echo-chat-drafts-v2', chat.drafts || {});
   if (chat?.conversations) for (const conv of chat.conversations) {
     if (!conv.avatarData && !conv.avatarRef && images.has('echo-conv-avatar-v1.' + conv.id)) conv.avatarData = images.get('echo-conv-avatar-v1.' + conv.id);
   }

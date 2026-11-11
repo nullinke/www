@@ -1,5 +1,5 @@
 import { streamChat, parseReply, requestCompletion } from './api.js';
-import { loadSettings } from './settings-state.js';
+import { loadSettings, subscribeToSettings } from './settings-state.js';
 import { StorageError, uniqueId } from './storage-state.js';
 import { getConversation, findMessage, loadReplyHistory, appendMessage, replaceReplyTurn, updateMessage, withReplyTask } from './chat-state.js';
 import { saveExtractedMemories } from './memory-state.js';
@@ -16,9 +16,10 @@ export function delay(ms, signal) {
 export function createReplyRunner({ conversationId, onState, onUserCommitted, onChunk, onStaging, onReveal, onFinish }, { chat = streamChat, completion = requestCompletion, pause = delay } = {}) {
   let active = null, owner = null, disposed = false;
   const memoryJobs = new Set();
+  const unsubscribe = subscribeToSettings(settings => { if (!settings.memory.autoExtract) for (const job of memoryJobs) job.abort(); });
   const state = () => onState?.({ running: Boolean(active), owner });
-  function extract(speaker, userText, reply, turnId, sourceMessageIds, settings) {
-    if (!settings.models.text.apiKey || disposed || memoryJobs.size >= 2) return;
+  function extract(speaker, sourceUserMessage, reply, turnId, sourceMessages, settings) {
+    if (!settings.models.text.apiKey || !settings.memory.autoExtract || !loadSettings().memory.autoExtract || disposed || memoryJobs.size >= 2) return;
     const controller = new AbortController(); memoryJobs.add(controller);
     void (async () => {
       try {
@@ -26,12 +27,12 @@ export function createReplyRunner({ conversationId, onState, onUserCommitted, on
           settings, signal: controller.signal, temperature: 0.3, timeout: 20, maxOutputTokens: 512,
           messages: [
             { role: 'system', content: '提取对话中明确的约定、事件、喜好或羁绊。只返回 JSON 数组，每项为 {"content":"20字以内的事实","tags":["约定"或"事件"或"喜好"或"羁绊"]}。不记录普通寒暄或推测，最多3项，没有则返回 []。' },
-            { role: 'user', content: `用户：${userText.slice(0, 4000)}\n${speaker.name}：${reply.slice(0, 4000)}` },
+            { role: 'user', content: `用户：${(sourceUserMessage?.text || '').slice(0, 4000)}\n${speaker.name}：${reply.slice(0, 4000)}` },
           ],
         });
         controller.signal.throwIfAborted();
         const items = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
-        if (Array.isArray(items)) await saveExtractedMemories({ conversationId, charId: speaker.id, turnId, sourceMessageIds, items });
+        if (Array.isArray(items)) await saveExtractedMemories({ conversationId, charId: speaker.id, turnId, sourceMessages, sourceUserMessage, items });
       } catch (error) { if (error.name !== 'AbortError') console.warn('[Echo] 记忆提取未完成：', error.message); }
       finally { memoryJobs.delete(controller); }
     })();
@@ -39,8 +40,9 @@ export function createReplyRunner({ conversationId, onState, onUserCommitted, on
   async function run({ regenerateMessage = null, userText = '' } = {}) {
     if (active || disposed) return false;
     const settings = loadSettings();
-    active = new AbortController(); state();
+    active = new AbortController();
     try {
+      state();
       await withReplyTask(conversationId, { signal: active.signal }, async session => {
         owner = session.owner; state();
         try {
@@ -76,22 +78,22 @@ export function createReplyRunner({ conversationId, onState, onUserCommitted, on
               onStaging?.(entries);
               await replaceReplyTurn(conversationId, turnId, entries, regenerateMessage && !regenerateMessage.turnId ? regenerateMessage.id : null, { owner });
               for (const entry of entries.slice(1)) { await pause(420, session.signal); onReveal?.(entry.id); }
-              extract(speaker, history.filter(message => message.author === 'mine').at(-1)?.text || '', reply.text, turnId, entries.map(entry => entry.id), settings);
+              extract(speaker, history.filter(message => message.author === 'mine').at(-1), reply.text, turnId, entries.map(({ id, text }) => ({ id, text })), settings);
             } catch (error) {
               if (error instanceof StorageError) throw error;
-              if (await findMessage(conversationId, pendingId)) await updateMessage(conversationId, pendingId, { text: error.name === 'AbortError' ? '⚠ 回复已取消，可重新生成' : `⚠ ${error.message}`, status: error.name === 'AbortError' ? 'cancelled' : 'failed' }, { owner });
+              if ((await findMessage(conversationId, pendingId))?.status === 'pending') await updateMessage(conversationId, pendingId, { text: error.name === 'AbortError' ? '⚠ 回复已取消，可重新生成' : `⚠ ${error.message}`, status: error.name === 'AbortError' ? 'cancelled' : 'failed' }, { owner });
               if (error.name === 'AbortError') throw error;
             }
           }
         } finally { owner = null; }
       });
       return true;
-    } finally { active = null; owner = null; state(); onFinish?.(); }
+    } finally { active = null; owner = null; try { state(); } finally { onFinish?.(); } }
   }
   return {
     run,
     cancel() { active?.abort(); },
-    dispose() { disposed = true; active?.abort(); for (const job of memoryJobs) job.abort(); },
+    dispose() { disposed = true; unsubscribe(); active?.abort(); for (const job of memoryJobs) job.abort(); },
     get running() { return Boolean(active); },
     get owner() { return owner; },
   };

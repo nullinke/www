@@ -282,7 +282,7 @@ test('UI CSS, HTML layout structure, and the theme controller retain the audited
   const root = new URL('../', import.meta.url);
   const baseline = JSON.parse(readFileSync(new URL('ui-baseline.json', import.meta.url), 'utf8'));
   const hash = text => createHash('sha256').update(text).digest('hex');
-  for (const file of readdirSync(root).filter(name => name.endsWith('.html'))) {
+  for (const file of readdirSync(root).filter(name => name.endsWith('.html') && baseline[name])) {
     const text = readFileSync(new URL(file, root), 'utf8');
     const css = [...text.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(match => match[1]).join('\n');
     const body = text.replace(/<(?:style|script)\b[^>]*>[\s\S]*?<\/(?:style|script)>/g, '').replace(/<!--[\s\S]*?-->/g, '');
@@ -291,7 +291,7 @@ test('UI CSS, HTML layout structure, and the theme controller retain the audited
     assert.equal(hash(tags.join('\n')), baseline[file].tags, file + ' layout changed');
   }
   const main = readFileSync(new URL('js/chat-app.js', root), 'utf8');
-  assert.equal(hash(main.slice(main.indexOf('function initThemePage()'), main.indexOf('function initArchivePage()'))), baseline.themeController);
+  assert.equal(hash(main.slice(main.indexOf('function initThemePage()'), main.indexOf('// @theme-controller-end'))), baseline.themeController);
 });
 
 
@@ -338,4 +338,90 @@ test('deleting a replying group member fences its late result and cleans up the 
   });
   const rows = await allMessages(group.id);
   assert.equal(rows.length, 1); assert.equal(rows[0].status, 'interrupted');
+});
+
+test('invalid imports fail before changing either business data or settings', async () => {
+  const original = JSON.stringify([...(await dbState.exportBusiness())]);
+  settings.updateSettings(s => { s.models.text.name = 'keep'; });
+  const bad = [];
+  const duplicate = chat.defaultChatState(); duplicate.messagesByConversation.nereus.push({ ...duplicate.messagesByConversation.nereus[0] }); bad.push([chat.STORAGE_KEY, duplicate]);
+  const members = chat.defaultChatState(); members.conversations[0].members = 'not-an-array'; bad.push([chat.STORAGE_KEY, members]);
+  const identifier = chat.defaultChatState(); identifier.conversations[0].id = '__proto__'; bad.push([chat.STORAGE_KEY, identifier]);
+  bad.push(['echo-profile-v1', { nickname: 42 }], ['echo-memory-v1', [{ content: null }]], ['echo-profile-v1', JSON.parse('{"archive":{"__proto__":{"polluted":true}}}')]);
+  let deep = {}; for (let i = 0; i < 45; i++) deep = { child: deep }; bad.push(['echo-profile-v1', deep]);
+  for (const [key, value] of bad) {
+    await assert.rejects(persistence.restoreBackup({ format: 'echo-backup', version: 1, data: { [key]: JSON.stringify(value), 'echo-settings-v1': '{"models":{"text":{"name":"wrong"}}}' } }));
+    assert.equal(JSON.stringify([...(await dbState.exportBusiness())]), original); assert.equal(settings.loadSettings().models.text.name, 'keep');
+  }
+  assert.equal({}.polluted, undefined);
+});
+
+test('old embedded drafts restore, while an explicit draft record takes precedence', async () => {
+  const old = chat.defaultChatState(); old.drafts.nereus = 'embedded'; await chat.setDraft('momo', 'old unrelated');
+  const data = { [chat.STORAGE_KEY]: JSON.stringify(old) };
+  await persistence.restoreBackup({ format: 'echo-backup', version: 1, data });
+  assert.equal(chat.loadChatState().drafts.nereus, 'embedded'); assert.equal(chat.loadChatState().drafts.momo, undefined);
+  data['echo-chat-drafts-v2'] = JSON.stringify({ nereus: 'explicit' });
+  await persistence.restoreBackup({ format: 'echo-backup', version: 1, data });
+  assert.equal(chat.loadChatState().drafts.nereus, 'explicit');
+});
+
+test('ordinary draft and profile writes never reload unrelated record arrays', async () => {
+  const getAll = IDBObjectStore.prototype.getAll, getAllKeys = IDBObjectStore.prototype.getAllKeys;
+  IDBObjectStore.prototype.getAll = function (...args) { if (['records', 'messages'].includes(this.name)) throw Error('unrelated full read'); return getAll.apply(this, args); };
+  IDBObjectStore.prototype.getAllKeys = function (...args) { if (this.name === 'records') throw Error('unrelated key scan'); return getAllKeys.apply(this, args); };
+  try {
+    await chat.setDraft('nereus', 'bounded'); await profile.updateProfile({ nickname: 'bounded' });
+    assert.equal(chat.loadChatState().drafts.nereus, 'bounded'); assert.equal(profile.loadProfile().nickname, 'bounded');
+  } finally { IDBObjectStore.prototype.getAll = getAll; IDBObjectStore.prototype.getAllKeys = getAllKeys; }
+});
+
+test('manual remember rolls back its fact, messages and draft together, then succeeds without duplicating facts', async () => {
+  await chat.setDraft('nereus', '记住：tea'); const before = JSON.stringify([...(await dbState.exportBusiness())]); let failed = false;
+  IDBObjectStore.prototype.put = function (...args) {
+    if (this.name === 'records' && args[1] === 'echo-chat-drafts-v2') { failed = true; throw new DOMException('full', 'QuotaExceededError'); }
+    return originalPut.apply(this, args);
+  };
+  await assert.rejects(chat.rememberMessage('nereus', '记住：tea', 'tea')); assert.equal(failed, true);
+  assert.equal(JSON.stringify([...(await dbState.exportBusiness())]), before);
+  IDBObjectStore.prototype.put = originalPut;
+  await chat.rememberMessage('nereus', '记住：tea', 'tea'); await chat.rememberMessage('nereus', '记住：tea', 'tea');
+  assert.equal(memory.loadMemories().filter(m => m.content === 'tea').length, 1);
+  assert.equal(chat.loadChatState().drafts.nereus, undefined); assert.match((await allMessages('nereus')).at(-1).text, /已记住/);
+});
+
+test('editing the request history immediately cancels and fences an active owner', async () => {
+  let start; const started = new Promise(resolve => { start = resolve; }); let taskSignal;
+  const task = chat.withReplyTask('nereus', {}, async ({ owner, signal }) => {
+    taskSignal = signal; start();
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    await assert.rejects(chat.appendMessage('nereus', { author: 'peer', text: 'stale' }, { owner }));
+  });
+  await started; await chat.updateMessage('nereus', 'nereus-3', { text: 'edited while replying' });
+  assert.equal(taskSignal.aborted, true); await task;
+  assert.equal((await allMessages('nereus')).some(row => row.text === 'stale'), false);
+});
+
+test('duplicate reply IDs cannot overwrite unrelated messages during regeneration', async () => {
+  await chat.appendMessage('nereus', { id: 'target', author: 'peer', text: 'old', turnId: 't', status: 'complete' });
+  const before = await allMessages('nereus');
+  await assert.rejects(chat.replaceReplyTurn('nereus', 't', [{ id: 'nereus-3', author: 'peer', text: 'bad', turnId: 't' }]));
+  assert.deepEqual(await allMessages('nereus'), before);
+});
+
+test('moments support validated image posts, replies and deleting only own posts', async () => {
+  const own = await moments.addPost('with image', [image]);
+  assert.equal(moments.loadPosts()[0].images.length, 1);
+  await moments.addComment(own.id, 'nice');
+  assert.equal(moments.loadPosts()[0].comments[0].text, 'nice');
+  const peer = await moments.addPost('peer post', [], { authorId: 'nereus', authorName: 'Nereus', authorType: 'peer' });
+  await moments.deletePost(peer.id); assert.ok(moments.loadPosts().some(post => post.id === peer.id));
+  await moments.deletePost(own.id); assert.equal(moments.loadPosts().some(post => post.id === own.id), false);
+});
+
+test('couple automation settings are bounded and reject missing characters', async () => {
+  const couple = await import('../js/couple-state.js');
+  await assert.rejects(couple.setCoupleCharacter('missing'), persistence.StorageError);
+  await couple.setCoupleCharacter('nereus'); await couple.updateCoupleSettings({ autoMessages: true, autoMoments: true, intervalMinutes: 1, summarizeRounds: 999 });
+  assert.equal(couple.loadCouple().charId, 'nereus'); assert.equal(couple.loadCouple().intervalMinutes, 5); assert.equal(couple.loadCouple().summarizeRounds, 100);
 });

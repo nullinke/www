@@ -1,5 +1,6 @@
 import { mutateRecord } from './database-state.js';
 import { loadProfile } from './profile-state.js';
+import { safeImage } from './storage-state.js';
 import { readJson, hydrateImages, uniqueId, subscribe } from './storage-state.js';
 // echo-moments-v1 数据格式：
 // Post { id, authorId, authorName, authorInitial, authorAvatar,
@@ -58,7 +59,7 @@ function normalizePost(p) {
     time:          String(p.time || ''),
     liked:         Boolean(p.liked),
     likeCount:     Math.max(0, Number(p.likeCount) || 0),
-    comments:      Array.isArray(p.comments) ? p.comments : [],
+    comments:      Array.isArray(p.comments) ? p.comments.filter(comment => comment && typeof comment.text === 'string').slice(-50).map(comment => ({ id: String(comment.id || crypto.randomUUID()), authorName: String(comment.authorName || '我').slice(0, 32), text: comment.text.trim().slice(0, 300), time: String(comment.time || '') })) : [],
   };
 }
 
@@ -88,7 +89,7 @@ export async function toggleLike(id) {
   return result;
 }
 
-export async function addPost(text, images = []) {
+export async function addPost(text, images = [], author = {}) {
   const now   = new Date();
   const time  = new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit', minute: '2-digit', hour12: false,
@@ -100,13 +101,13 @@ export async function addPost(text, images = []) {
 
   const post = {
     id: uniqueId('post-mine-'),
-    authorId: 'mine',
-    authorName: nickname,
-    authorInitial: nickname.charAt(0),
-    authorAvatar: avatarData,
-    authorType: 'mine',
+    authorId: author.authorId || 'mine',
+    authorName: author.authorName || nickname,
+    authorInitial: (author.authorName || nickname).charAt(0),
+    authorAvatar: author.authorAvatar || avatarData,
+    authorType: author.authorType === 'peer' ? 'peer' : 'mine',
     text: text.trim(),
-    images,
+    images: images.filter(safeImage),
     time,
     liked: false,
     likeCount: 0,
@@ -114,6 +115,16 @@ export async function addPost(text, images = []) {
   };
   await mutateRecord(STORAGE_KEY, cloneDefaults, raw => [post, ...raw.map(normalizePost).filter(Boolean)]);
   return post;
+}
+
+export function addComment(postId, text) {
+  const value = String(text || '').trim(); if (!value) return Promise.resolve();
+  const profile = loadProfile();
+  return mutateRecord(STORAGE_KEY, cloneDefaults, posts => posts.map(normalizePost).filter(Boolean).map(post => post.id === postId ? { ...post, comments: [...post.comments, { id: crypto.randomUUID(), authorName: profile.nickname, text: value.slice(0, 300), time: new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()) }].slice(-50) } : post));
+}
+
+export function deletePost(postId) {
+  return mutateRecord(STORAGE_KEY, cloneDefaults, posts => posts.map(normalizePost).filter(post => post && !(post.id === postId && post.authorType === 'mine')));
 }
 
 export function subscribeToPosts(handler) {
