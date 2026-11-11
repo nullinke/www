@@ -1,3 +1,5 @@
+import { mutateRecord } from './database-state.js';
+import { readJson, hydrateImages, StorageError, subscribe } from './storage-state.js';
 // echo-profile-v1 数据格式：
 // { nickname: string, id: string, bio: string, avatarData: string(base64|''), coverImage: string(base64|''),
 //   archive: { gender, age, birthday, appearance, personality, hobbies } }
@@ -26,13 +28,16 @@ function normalizeProfile(value) {
   if (!value || typeof value !== 'object') return fallback;
   const arc = (value.archive && typeof value.archive === 'object') ? value.archive : {};
   return {
+    ...value,
     version: 1,
+    avatarRef: value.avatarRef, coverImageRef: value.coverImageRef,
     nickname:   safeStr(value.nickname,   fallback.nickname,   32),
     id:         safeStr(value.id,         fallback.id,         32),
-    bio:        safeStr(value.bio,        fallback.bio,        200),
+    bio:        typeof value.bio === 'string' ? value.bio.trim().slice(0, 200) : fallback.bio,
     avatarData:  typeof value.avatarData  === 'string' ? value.avatarData  : '',
     coverImage:  typeof value.coverImage  === 'string' ? value.coverImage  : '',
     archive: {
+      ...arc,
       gender:      safeStr(arc.gender,      '', 20),
       age:         safeStr(arc.age,         '', 10),
       birthday:    safeStr(arc.birthday,    '', 20),
@@ -50,32 +55,20 @@ function safeStr(value, fallback, maxLen) {
 }
 
 export function loadProfile() {
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    return normalizeProfile(stored ? JSON.parse(stored) : null);
-  } catch {
-    return normalizeProfile(null);
-  }
+  const value = hydrateImages(readJson(STORAGE_KEY, null));
+  if (value !== null && (typeof value !== 'object' || Array.isArray(value) || (value.version !== undefined && value.version !== 1))) throw new StorageError('资料数据结构不受支持，已保留原始内容。');
+  return normalizeProfile(value);
 }
 
 export function saveProfile(profile) {
-  const normalized = normalizeProfile(profile);
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-  } catch { /* storage unavailable */ }
-  window.dispatchEvent(new CustomEvent('echo-profile-change', { detail: normalized }));
-  return normalized;
+  return mutateRecord(STORAGE_KEY, null, () => normalizeProfile(profile));
+}
+
+export function updateProfile(patch) {
+  return mutateRecord(STORAGE_KEY, DEFAULT_PROFILE, current => normalizeProfile({ ...current, ...patch, archive: { ...current.archive, ...(patch.archive || {}) } }));
 }
 
 export function subscribeToProfile(handler) {
-  const onCustom  = (e) => handler(normalizeProfile(e.detail));
-  const onStorage = (e) => { if (e.key === STORAGE_KEY) handler(loadProfile()); };
-  window.addEventListener('echo-profile-change', onCustom);
-  window.addEventListener('storage', onStorage);
-  return () => {
-    window.removeEventListener('echo-profile-change', onCustom);
-    window.removeEventListener('storage', onStorage);
-  };
+  return subscribe(STORAGE_KEY, 'echo-profile-change', handler, loadProfile);
 }
-
 export { STORAGE_KEY };

@@ -1,423 +1,103 @@
-Echo 小手机 — 新窗口交接文档
-最后更新：2026-11-10（第三版，全量功能补充 + 美化/设置重构）
-项目路径：/sdcard/小手机/
-访问入口：http://127.0.0.1:8765/lock-screen.html
-一、项目目标
-玻璃拟态（Glassmorphism）风格的 AI 小手机 App UI，运行在浏览器里，模拟 iOS 手机界面。
-技术栈：原生 HTML + CSS + 原生 JS（ES Module）。无框架，无外部 UI 库。
-仅允许的外部资源：Font Awesome 6（图标）、MiSans / Cormorant Garamond / Liter（字体）。
-二、开发环境
-HTTP Server 启动
-每次重启 Operit 后需重启，使用带 no-cache 头的自定义 Server（防缓存干扰开发）：
-# 启动（已写入 /tmp/nocache_server.py）
-nohup python3 /tmp/nocache_server.py > /tmp/httpserver.log 2>&1 &
+# Echo 小手机
 
-# 若 /tmp/nocache_server.py 丢失，重新创建：
-cat > /tmp/nocache_server.py << 'EOF'
-import http.server, os
+原生 HTML、CSS、JavaScript ES Module 实现的浏览器 AI 小手机。保留现有 UI 和美化，不引入运行时 UI 框架。
 
-class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
-    def end_headers(self):
-        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
-        self.send_header('Pragma', 'no-cache')
-        self.send_header('Expires', '0')
-        super().end_headers()
-    def log_message(self, format, *args): pass
+## 运行
 
-os.chdir('/sdcard/小手机')
-http.server.test(HandlerClass=NoCacheHandler, port=8765, bind='127.0.0.1')
-EOF
-nohup python3 /tmp/nocache_server.py > /tmp/httpserver.log 2>&1 &
-# 验证
-curl -I http://127.0.0.1:8765/lock-screen.html | grep -i 'cache\|HTTP'
-# 应返回 HTTP/1.0 200 + Cache-Control: no-store
-强制刷新缓存（每次修改后执行）
-TS=$(date +%s) && for f in /sdcard/小手机/*.html; do sed -i "s/?v=[0-9]*/?v=$TS/g" "$f"; done && echo "v=$TS"
-语法检查
-node --input-type=module < /sdcard/小手机/js/chat-app.js 2>&1 | grep -i syntaxerror
-# 无输出即正常（ERR_MODULE_NOT_FOUND 是正常的，不是 SyntaxError）
-三、文件结构
-/sdcard/小手机/
-├── js/
-│   ├── chat-app.js        # 主逻辑入口（~3628行）所有页面 init 函数 + streamChat + buildMessages
-│   ├── api.js             # 存档用，已内联进 chat-app.js，实际不被 import
-│   ├── chat-state.js      # 会话/消息状态 CRUD（~237行）
-│   ├── chat-router.js     # URL 路由参数解析/生成（~39行）
-│   ├── settings-state.js  # 设置项持久化（~191行）含 saveThemeAsset/loadThemeAsset
-│   ├── memory-state.js    # 记忆库 CRUD（~109行）
-│   ├── moments-state.js   # 朋友圈动态 CRUD（~139行）
-│   └── profile-state.js   # 用户资料持久化（~80行）
-├── index.html             # 重定向 → lock-screen.html
-├── lock-screen.html       # 锁屏（入口，内联 script 读 lockScreenWallpaper + lockAvatar）
-├── home.html              # 主页（Tab:Home，功能卡片，图标/字体应用 CSS 变量）
-├── chat-list.html         # 聊天列表（动态渲染，含「我的资料」弹层）
-├── chat-room.html         # 聊天室（AI 流式回复，长按菜单，心声折叠，聊天背景层）
-├── chat-settings.html     # 角色主页（单人编辑/删除；群聊成员/改名/解散）
-├── chat-create.html       # 新建角色/群聊
-├── settings.html          # 设置（API 配置、range 滑块生成参数、MCP 连接探测、颜色弹层）
-├── other.html             # 其他功能入口（Tab:Other，图标/字体应用 CSS 变量）
-├── archive.html           # 档案（「我」+ 角色，注入 system prompt）
-├── memory.html            # 记忆库（搜索、筛选、删除）
-├── moments.html           # 朋友圈（发帖、点赞）
-├── couple-space.html      # 情侣空间（切换关联角色）
-├── theme.html             # 美化（range 滑块、颜色弹层、自定义图标/字体/壁纸）
-├── world.html             # 世界书（UI 静态，逻辑未接）
-├── my-profile.html        # 我的资料（独立页，已被弹层替代，保留未删）
-└── HANDOVER.md            # 本文件
-四、localStorage 数据结构
-Key
-内容
-echo-chat-state-v1
-会话列表、消息记录、草稿
-echo-profile-v1
-用户昵称/ID/签名/头像/朋友圈封面/archive 档案
-echo-settings-v1
-模型配置、生成参数、主题（iconSize/fontSize/iconShape/fontColor）
-echo-memory-v1
-记忆条目数组
-echo-moments-v1
-朋友圈动态数组
-echo-couple-v1
-情侣空间配置 { charId }
-echo-conv-avatar-v1.{convId}
-角色头像 base64（独立 key，防主 JSON 超限）
-echo-theme-assets-v1.lockAvatar
-锁屏圆环头像 base64
-echo-theme-assets-v1.lockScreenWallpaper
-锁屏专属壁纸 base64（仅 lock-screen.html 读）
-echo-theme-assets-v1.wallpaper
-全局壁纸 base64（home/other 等页面，不含锁屏和聊天室）
-echo-theme-assets-v1.chatBg
-聊天室专属背景 base64（仅 chat-room.html）
-echo-theme-assets-v1.icon.{cardId}
-自定义图标图片 base64，cardId 为 home.html 的卡片 id
-echo-theme-assets-v1.customFont
-自定义字体 base64（ttf/otf/woff/woff2）
-echo-theme-assets-v1.customFontName
-自定义字体文件名（字符串，非图片）
-⚠️ localStorage 空间管理
-- WebView localStorage 上限约 5MB，base64 图片极易撑满
-- 所有图片上传统一经过 resizeImage(file, maxSize, quality)
-- 角色头像独立 key：echo-conv-avatar-v1.{id}，不进主 JSON
-- saveChatState 三级降级：① 直接写 → ② 迁出 avatarData 再写 → ③ 截断消息到最近 50 条
-settings.theme 字段说明
-{
-  iconSize:   0~100,   // 图标芯片大小（0→30px, 50→38px, 100→46px）
-  iconShape:  'round'|'square',  // 圆角13px / 方角10px
-  fontSize:   0~100,   // 字体大小（0→12px, 45→14.25px, 100→17px）
-  fontColor:  '#rrggbb',  // ⚠️ 新版存 hex 字符串；旧版为 'ink'|'gray'|'white'，已做兼容处理
-}
-五、CSS 变量体系
-设计 Token（不可修改）
---brand-blue: #9CC4E4       /* 品牌主蓝 */
---brand-blue-deep: #7FA8CC
---brand-ink: #4E6B80        /* 正文主色 */
---brand-deep: #5E7B90
---brand-muted: #9DB4C4
---glass-bg: rgba(255,255,255,0.55)
---glass-border: rgba(255,255,255,0.90)
---glass-blur: blur(12px) saturate(1.4)   /* 毛玻璃 */
---radius-card: 24px / 22px              /* 卡片圆角 */
---shadow-glass: 0 8px 20px rgba(143,186,217,0.18)
-主题动态变量（由 applyThemeTokens() 注入 document.documentElement.style）
-变量
-来源
-作用范围
---font-size-base
-settings.theme.fontSize
-home/other 卡片标签字体大小
---font-color-base
-settings.theme.fontColor（hex）
-home/other 卡片标签颜色
---icon-chip-size
-settings.theme.iconSize
-图标芯片宽高
---icon-chip-radius
-settings.theme.iconShape
-图标芯片圆角
---icon-font-size
-settings.theme.iconSize × 0.42
-图标芯片内图标大小
-注入时机：init() 最顶部，直接读 localStorage.getItem('echo-settings-v1') 绕开 volatile 缓存。
-实时刷新：initThemePage() 内通过 subscribeToSettings() 订阅，拖动滑块即时更新当前页。
-六、init() 启动流程
-init()
-  ├─ applyWallpaper()         全局壁纸（跳过 chat-room / lock-screen）
-  ├─ applyChatBg()            聊天背景（仅 chat-room.html）
-  ├─ applyThemeTokens()       注入字体/图标 CSS 变量（跳过 lock-screen）
-  ├─ initMainNavigation()     Tab 栏高亮 + href 绑定
-  ├─ initHomePage()           问候语 + 自定义图标加载 + 卡片路由
-  ├─ (chat-list.html)         renderChatList() + subscribeToChatState + initChatListProfileSheet
-  ├─ (chat-room.html)         initChatRoom()
-  ├─ (chat-settings.html)     initChatSettings() + initCharProfilePage()
-  ├─ (settings.html)          initSettingsPage()
-  ├─ (memory.html)            initMemoryPage()
-  ├─ (my-profile.html)        initProfilePage()
-  ├─ (chat-create.html)       initChatCreatePage()
-  ├─ (moments.html)           initMomentsPage()
-  ├─ (archive.html)           initArchivePage()
-  ├─ (theme.html)             initThemePage()
-  └─ (couple-space.html)      initCoupleSpacePage()
-lock-screen.html 单独处理：不加载 chat-app.js，用内联 <script> 读取 lockScreenWallpaper + lockAvatar，点击后淡出跳转 home.html。
-七、壁纸三分离架构
-lock-screen.html  →  读 echo-theme-assets-v1.lockScreenWallpaper
-                      （内联 script，与 chat-app.js 无关）
+在仓库根目录执行：
 
-home/other/etc   →  init() → applyWallpaper()
-                      读 echo-theme-assets-v1.wallpaper
-                      插入 position:fixed z-index:-1 壁纸层（id=__wallpaper_layer__）
-                      .phone 背景改为半透明渐变让壁纸透出
+```sh
+npm start
+```
 
-chat-room.html   →  init() → applyChatBg()
-                      读 echo-theme-assets-v1.chatBg
-                      显示 #__chatbg_layer__（position:absolute opacity:0.55）
-                      ⚠️ applyWallpaper() 在 chat-room 里被跳过
-theme.html 设置入口：锁屏壁纸 / 全局壁纸 / 聊天背景 三行独立卡片，各自上传、各自存独立 key。
-八、已完成功能清单
-导航与路由
-[x] 锁屏 → 淡出 → 主页淡入（0.9s）
-[x] 底部 Tab 栏（Home / Chat / Settings / Other）
-[x] URL 路由参数（nav=tab|list、from=home|other|chat-list、conversationId）
-[x] 从主页卡片进入：无 Tab 栏 + 有返回键；从 Tab 进入：有 Tab 栏
-聊天功能
-[x] 会话列表全动态渲染（不依赖静态 HTML）
-[x] 流式 AI 回复（SSE，逐 token 更新气泡，实时过滤 <think> 标签防泄露）
-[x] 草稿持久化；未读标记；记住：内容 手动写记忆
-[x] 新建单人角色（含头像上传压缩）；新建群聊（选 2+ 角色，拼合头像预览）
-[x] 角色主页（编辑名字/备注/角色设定/头像/气泡颜色/绑定世界书/删除）
-[x] 群聊多角色串行回复（随机停顿 600~1400ms，出错继续下一个）
-[x] 长按消息菜单（编辑 / 删除 / 重新生成）
-[x] 心声折叠组件（<think> 解析，chevron 旋转展开）
-[x] 气泡颜色 per-conversation（我的 + 角色，保存到 conv 对象）
-[x] 聊天室专属背景图（独立于全局壁纸）
-AI API
-[x] OpenAI 兼容格式，任意中转站
-[x] buildMessages：角色 persona + 用户档案 + 角色档案 + 回复格式指令 + 历史消息
-[x] 口语换行分段 + 逐条 420ms 延迟分发（模拟打字节奏）
-[x] 超时中断（AbortController），可配置
-[x] 拉取 /models 接口（过滤 embedding/tts 等非对话模型）
-自动记忆提取
-[x] 每轮对话结束后异步触发（temperature=0.3，20s 超时，不阻塞 UI）
-[x] 提取约定/承诺/羁绊/喜好，写入 echo-memory-v1
-美化页（theme.html）
-功能
-存储 key
-状态
-锁屏圆环头像
-lockAvatar
-✅
-锁屏壁纸
-lockScreenWallpaper
-✅
-全局壁纸
-wallpaper
-✅
-聊天背景
-chatBg
-✅
-图标大小（原生 range）
-iconSize → --icon-chip-size
-✅
-图标形状切换
-iconShape → --icon-chip-radius
-✅
-自定义图标（6个，每个独立）
-icon.{cardId}
-✅
-字体大小（原生 range）
-fontSize → --font-size-base
-✅
-字体颜色（玻璃弹层）
-fontColor（hex）
-✅
-自定义字体上传
-customFont + customFontName
-✅（当前页生效）
-设置页（settings.html）
-[x] 模型配置（URL + Key + 名称，密钥显示/隐藏，预设列表，拉取 /models）
-[x] 生成参数（原生 range 滑块：温度/TopP/上下文/频率惩罚/存在惩罚）
-[x] MCP 开关：开启时探测接口可达性，显示真实连接状态
-[x] 字体颜色色盘（同美化页，玻璃弹层）
-个人与社交
-[x] 我的资料弹层（昵称/ID/签名/头像/朋友圈封面）
-[x] 情侣空间（关联角色切换）
-[x] 朋友圈（发帖/点赞）
-[x] 档案页（「我」+ 角色档案，注入 AI system prompt）
-[x] 记忆库（搜索/筛选/删除，实时监听更新）
-九、核心约束（不可违反）
-1. 不修改 CSS 设计 Token：颜色（#9CC4E4、#4E6B80 等）、圆角（24px/20px/999px）、毛玻璃参数（blur(12px) saturate(1.4)）均不得改动
-2. 不引入外部 UI 库：只允许 Font Awesome、MiSans/Cormorant/Liter 三个已有外部资源
-3. 不修改 HTML 布局结构：只能加 id/style/class，不能改层级关系
-4. JS 新增逻辑只往 chat-app.js 追加，不新建额外 JS 逻辑文件（*-state.js 为数据层可独立修改）
-5. localStorage 图片必须用独立 key：角色头像 echo-conv-avatar-v1.{id}，主题资源 echo-theme-assets-v1.{key}，绝不塞进任何 JSON 对象
-6. 所有图片上传必须经过 resizeImage(file, maxSize, quality)
-十、关键实现细节
-滑块实现（原生 range）
-美化页和设置页均已从手写 div 滑杆迁移到原生 <input type="range">，点击区域高度 28px，移动端零延迟：
-<input class="slider-range" id="range-icon-size" type="range" min="0" max="100" value="50" step="1">
-// 轨道填充渐变（实时更新，视觉反馈已拖动部分为品牌蓝）
-function updateRangeTrack(input) {
-  const pct = ((Number(input.value) - Number(input.min)) / (Number(input.max) - Number(input.min))) * 100;
-  input.style.backgroundImage = `linear-gradient(to right,#9CC4E4 0%,#9CC4E4 ${pct}%,#E2EDF5 ${pct}%,#E2EDF5 100%)`;
-  input.style.backgroundSize = '100% 4px';
-  input.style.backgroundRepeat = 'no-repeat';
-  input.style.backgroundPosition = 'center';
-}
-颜色弹层（玻璃风格，两个页面各自独立）
-theme.html 由 initThemePage() 内的 IIFE initColorSheet() 初始化。
-settings.html 由 initSettingsPage() 直接初始化。
-两者共用相同的 DOM id（color-mask、color-presets、color-sheet-apply 等）和逻辑，但各自在自己的 HTML 文件里声明 DOM 和 CSS。
-.color-mask（遮罩）→ .color-sheet（上滑面板）
-  ├─ .color-presets（5×2 预设色块，点击即选，选中有蓝边 + ✓ 勾）
-  ├─ .color-custom-row（44px 预览方块 + # 前缀 hex 输入框）
-  └─ .color-sheet__apply（应用 → 写入 settings.theme.fontColor）
-⚠️ fontColor 现存 #rrggbb hex。settings-state.js 校验已兼容旧值（ink/gray/white）。
-MCP 连接探测
-async function tryConnectMcp() {
-  // 向 settings.models.text.baseUrl + '/models' 发 GET 探针（5s AbortController 超时）
-  // HTTP 200/401/403 → 端点存在，绿色「已连接」
-  // 其他状态码 → 红色「连接失败 {status}」
-  // 网络错误 → 红色「无法访问」
-  // AbortError → 红色「连接超时」
-}
-// 触发时机：
-//   1. settings.html 加载（mcpEnabled=true 时）
-//   2. MCP 开关由 off→on
-//   3. 文字模型配置保存后（仅 text model key）
-自定义图标应用链路
-theme.html initThemePage()
-  → 渲染 6 格图标网格（ICON_DEFS 定义 id + 名称 + FA 默认图标）
-  → 用户点击格子 → fileInput.click() → resizeImage(file, 96)
-  → saveThemeAsset('icon.btn-music', data)
+默认打开 `http://localhost:5173/`，点击“进入手机界面”。入口指向仓库中实际的 `小手机/lock-screen.html`；也可直接访问该路径。支持 `PORT` 环境变量修改端口，StackBlitz 使用同一个启动命令。静态服务器使用 Node 内置模块，无需安装运行时依赖，不暴露隐藏文件、node_modules 或测试工具目录。
 
-home.html initHomePage()
-  → ICON_IDS.forEach(id => loadThemeAsset('icon.' + id))
-  → 替换对应 .feature-card__chip 的 innerHTML 为 <img>
+文字模型目前支持 OpenAI Chat Completions 兼容接口。供应商需要允许浏览器 CORS；远程接口使用 HTTPS，localhost/127.0.0.1 的开发接口可使用 HTTP。模型接口检测与 MCP 协议分开：项目尚未实现 MCP 工具调用。
 
-6 个图标 id：btn-music / btn-diary / btn-invite / btn-trip / btn-pet / btn-home-feature
-自定义字体注入（当前实现限制）
-// 上传时注入当前页面
-const style = document.createElement('style');
-style.id = '__custom_font_style__';
-style.textContent = `
-  @font-face { font-family: "EchoCustomFont"; src: url("${base64}"); }
-  body, .phone { font-family: "EchoCustomFont", var(--font-zh) !important; }
-`;
-document.head.appendChild(style);
+## 当前架构
 
-// ⚠️ 已知问题：跨页不持久。其他页面刷新后字体回默认。
-// 修复方案：在 init() 末尾的 applyThemeTokens() 或独立函数里，
-//           读取 loadThemeAsset('customFont') 并重新注入 @font-face。
-applyThemeTokens 读取策略（重要）
-// ❌ 错误做法：loadSettings() 首次可能返回 volatile 缓存默认值
-// ✅ 正确做法：直读 localStorage
-const raw = localStorage.getItem('echo-settings-v1');
-const s = raw ? JSON.parse(raw) : null;
-const th = (s && s.theme) ? s.theme : { fontSize:45, fontColor:'ink', iconSize:50, iconShape:'round' };
-render() 函数（聊天室）
-直接读 raw localStorage，绕开 normalizeState 时序问题：
-const render = () => {
-  const raw = JSON.parse(localStorage.getItem('echo-chat-state-v1'));
-  const current = raw.conversations?.find(c => c.id === route.conversationId) || raw.conversations?.[0];
-  if (!current) return;
-  renderMessages(current, raw.messagesByConversation?.[current.id] || []);
-};
-十一、已知问题
-问题
-状态
-说明
-自定义字体跨页不持久
-待修复
-仅 theme.html 上传时注入当前页，其他页面刷新后字体回默认；需在 init() 里增加读取注入
-自定义图标仅 home.html 的 6 个
-待扩展
-other.html 卡片、couple-space 等页面的图标无法自定义
-图标大小/字体变化跨页需刷新
-已知
-CSS 变量在 init() 注入，修改后需进新页面才生效；theme.html 当前页通过 subscribeToSettings 实时刷新
-世界书页面纯静态
-待实现
-world.html 有 UI，无逻辑
-朋友圈评论
-待实现
-UI 按钮已有，逻辑未接
-气泡颜色保存后需重进才生效
-已知
-CSS 变量在 initChatRoom 里读取，切换后不实时刷新
-localStorage 容量风险
-运行期
-三级降级保护，建议图片上传前裁剪
-十二、待实现任务（按优先级）
-P1 — 补完主题系统
-- 自定义字体跨页生效：在 init() 里补充读取 loadThemeAsset('customFont') 并注入 @font-face，参考 initThemePage 里的 injectCustomFont() 逻辑
-- other.html 图标自定义：在 ICON_DEFS 数组中补充 other.html 的功能卡片 id，在 other.html 加载时读取应用（与 home.html 同样的 loadThemeAsset 遍历）
-P2 — 世界书功能
-- world.html 接入：导入世界书 JSON、持久化 echo-world-v1、在 chat-settings.html 绑定弹层显示真实列表
-- buildMessages 注入：绑定世界书内容追加到 system prompt
-P3 — 情侣空间完善
-- 纪念日倒计时：设置起始日期，首页/情侣空间显示「在一起 N 天」
-- 专属背景：独立背景图（存 echo-theme-assets-v1.coupleBg）
-P4 — 功能完善
-- 朋友圈评论：评论列表 + 发布逻辑
-- 朋友圈发帖支持图片：发布弹层加图片选择
-- 消息搜索：聊天室顶部搜索入口
-- 壁纸/背景透明度滑块：全局壁纸 0.72 硬编码，可加滑杆存 settings.theme.wallpaperOpacity
-P5 — 优化
-- localStorage 近满提示：存储使用率 > 80% 时弹出提示
-- 气泡颜色实时生效：保存气泡颜色后直接更新 CSS 变量，无需重进聊天室
-十三、页面导航关系图
-index.html → lock-screen.html（内联 script，无 chat-app.js）
-    └─ 点击 → home.html
-               ├─ Tab: Chat → chat-room.html?nav=tab
-               ├─ Tab: Settings → settings.html
-               ├─ Tab: Other → other.html
-               ├─ 卡片: 聊天/日记/邀约/行程/宠物 → chat-list.html?from=home
-               └─ 卡片: 家园 → couple-space.html
+| 模块 | 职责 |
+| --- | --- |
+| `小手机/js/chat-app.js` | 页面控制器、现有 DOM、历史分页和回复呈现回调 |
+| `小手机/js/pages/*.js` | 按页面懒加载的控制器；每页只绑定自己的 DOM 与业务命令 |
+| `小手机/js/ui-helpers.js` | 页面共享的安全文本、图片和错误处理辅助函数 |
+| `小手机/js/reply-service.js` | 单聊/群聊/重新生成调度、请求生命周期和后台记忆任务，无 DOM 依赖 |
+| `小手机/js/prompt-builder.js` | 按优先级选择设定、档案、记忆和历史，保持群聊身份 |
+| `小手机/js/token-budget.js` | 模型能力、文本分词、输入/输出预算和安全余量 |
+| `小手机/js/api.js` | 参数、SSE、JSON 回退、预算预检、超时和取消 |
+| `小手机/js/database-state.js` | IndexedDB 事务、迁移校验、消息索引、缓存失效和跨标签页通知 |
+| `小手机/js/storage-state.js` | 设置兼容层、备份恢复、安全图片与订阅接口 |
+| `小手机/js/chat-state.js` | 会话/消息/草稿 CRUD、按轮替换、任务所有权与过期结果拦截 |
+| `小手机/js/profile-state.js` | 资料局部更新与档案合并 |
+| `小手机/js/memory-state.js` | 记忆校验、来源、去重和事务更新 |
+| `小手机/js/moments-state.js` | 动态、点赞和事务更新 |
+| `小手机/js/couple-state.js` | 情侣关联的事务读写与角色存在性校验 |
+| `小手机/js/automation-state.js` | 角色主动消息、自动朋友圈、可选生图和定时调度 |
+| `小手机/js/data-validation.js` | 备份、迁移及业务写入的结构和深度限制 |
+| `小手机/js/settings-state.js` | 模型/参数/现有主题设置 |
+| `小手机/js/chat-router.js` | 路由参数与链接，目标不存在时返回列表 |
 
-chat-list.html
-    ├─ 我的资料卡 → 底部弹层（原地编辑）
-    ├─ 角色条目 → chat-room.html?nav=list&conversationId=xxx
-    ├─ 朋友圈 → moments.html
-    ├─ 情侣空间 → couple-space.html
-    └─ + 按钮 → chat-create.html
+页面只能通过数据接口修改业务数据。读取视图缓存前等待初始化完成；写入接口返回 Promise，提交后才更新缓存、通知页面并显示成功。事务中的读改写使用数据库当前值，避免把过期页面快照写回。页面控制器按需加载，主页不会加载聊天室、设置页或模型请求代码。
 
-chat-room.html → ··· → chat-settings.html?nav=xxx&conversationId=xxx
+## 存储与迁移
 
-other.html
-    ├─ 档案 → archive.html
-    ├─ 世界 → world.html（静态，逻辑未接）
-    ├─ 美化 → theme.html
-    └─ 设置 → settings.html?from=other
-十四、AI 回复完整流程
-用户输入 → sendMessage()
-  → appendMessage(mine)
-  → appendMessage(peer, '…', { streamMsgId, replyCharId })
-  → render()
+- **IndexedDB 是业务数据的唯一事实来源。** 会话、消息、资料、记忆、动态、草稿、情侣关联、世界书数据和非美化图片进入数据库。消息按会话和顺序索引，不把全部历史放在一个 JSON 里。
+- 首次启动从同源 localStorage 读取旧数据，兼容旧内联图片、独立头像和上一批的资源引用。导入、逐项内容/数量/图片引用验证、原始快照和完成标记在同一事务提交；失败全部回滚。
+- 原 localStorage 业务 key **保留不删**，完成迁移后不再重新导入，也不再双写。数据库中另保留迁移原始快照。损坏或未知版本不会被默认演示数据覆盖。
+- 模型 Key、轻量设置和现有美化资源暂维持原存储约定，避免改动美化实现。聊天写入不再受 localStorage 已满影响，但浏览器仍可能限制 IndexedDB 配额。
+- 聊天页首次读取最近 100 条，上滚继续加载；补入历史时保持阅读位置。普通追加、编辑、删除和草稿写入不读取或重写整个消息库。
+- 同会话回复使用浏览器锁及数据库 owner token。新标签页不会中断已有请求，页面关闭后可恢复孤立任务，旧请求即使晚到也不能提交过期结果。无 Web Locks 时退回带续期的数据库租约。
+- 跨标签页通过 BroadcastChannel 失效缓存；原子性来自 IndexedDB 事务，通知不是锁。草稿合并写入，完整回复先提交，再按原有节奏呈现。
 
-streamChat({ conversation, historyMessages })
-  → buildMessages():
-      [system] 角色 persona
-      [system] 用户档案（如有填写）
-      [system] 角色档案（如有填写）
-      [system] 回复格式指令（<think> 心声 + 口语换行分段）
-      历史消息（过滤脏消息、合并同角色、首条必须是 user）
-  → fetch SSE
-    → onChunk: bubble.textContent = visibleText（实时过滤 <think> 标签）
-    → onDone:
-        解析 <think>…</think> → thinkContent
-        正文按 \n 分段 → segments[]
-        raw localStorage: placeholder.text = segments[0], .think = thinkContent
-        render()
-        setTimeout × (segments.length-1): 后续段逐条追加（间隔 420ms）
-        extractMemories(charName, userText, textToSplit)  // 异步，不阻塞
-    → onError: placeholder.text = '⚠ 错误信息'
+`collectUnusedAssets()` 使用游标检查引用并回收无引用的业务图片，不全量加载消息；支持 AbortSignal，取消时事务回滚。世界页发起备份下载后执行一次维护，不在打开聊天室时扫描全历史。原始迁移快照和保留的 localStorage 不会被回收。
 
-群聊额外流程：
-  replySequential(idx)
-    → 随机等待 600~1400ms
-    → appendMessage(peer, '…', { replyCharId: members[idx].id })
-    → streamChat(members[idx])
-      → onDone → raw 写入 + render() + replySequential(idx+1)
-      → onError → render() + replySequential(idx+1)  // 出错也继续
-    → idx >= members.length → 解锁输入栏
-此文档覆盖截至 2026-11-10 第三版的全部实现。后续每次功能变更请同步更新本文件。
+## 回复与上下文预算
+
+回复调度独立于页面。发送用户消息与清空草稿在同一事务提交；API 错误不会依赖页面当前加载了哪些气泡来更新失败状态。完整回复仍先保存后展示，超长分段合并到最后一个气泡，最多安排 128 个气泡的展示任务，不丢正文。
+
+上下文使用设置中的 8K–64K 上限，并计入输出预留（默认最多 2,048 token）和 256 token 的协议余量。优先保留角色核心设定及最新用户消息，其次加入档案、角色记忆和近期历史；只裁请求副本，不截断数据库原文。核心设定或当前消息超出预算时明确报错，不发送请求。
+
+GPT-4o/4.1、GPT-4 和 GPT-3.5 Turbo 的已知模型名使用匹配的本地 `o200k_base`/`cl100k_base` 文本编码器；其他模型或加载失败时采用保守的 UTF-8 字节估算。供应商额外的消息封装无法保证精确，实际限制仍以接口为准。已识别的 o1/o3/o4/GPT-5 系列使用 `max_completion_tokens` 并省略采样参数；自定义模型名维持通用兼容参数。
+
+分词资源固定版本与校验值，首次使用对应编码时才从本站加载，无外部 CDN；开发依赖不会进入浏览器请求。来源与许可证在 `js/vendor/tokenizer/NOTICES.txt`，可用 `npm --prefix 小手机 run vendor:tokenizer` 重建。
+
+后台自动记忆每个聊天室最多并行两项，繁忙时跳过，关闭页面时取消。写入前在事务内校验角色、会话和源回复 ID 是否仍有效；重新生成成功时同步移除该轮的自动记忆，保留手工记忆，旧提取结果不能写回。
+
+## 备份与恢复
+
+世界页已有“备份/恢复”按钮已接通。普通备份从当前数据库读取完整业务数据，将业务图片内联，文件不依赖资源 key，**默认不含 API Key**。支持上一批导出的 v1 备份和旧内联图片。损坏的设置会跳过并在文件 warnings 中记录，业务数据仍可导出。
+
+恢复先验证全部条目，再以一次事务替换所含业务数据；失败保留原数据。设置和美化资源仍在 localStorage，运行期失败会回滚这些更改，但它们与 IndexedDB 之间不能保证进程崩溃时的整体原子性。已有本地 Key 仅在接口地址匹配时保留，不从备份文件导入凭据。
+
+自动迁移只适用于同一浏览器来源；换域名、设备或浏览器时使用备份文件。回退代码不会自动带回新产生的数据，应先导出当前备份。原始迁移快照可通过 `migrationBackup()` 导出。备份包含私人聊天和档案，请自行保管。
+
+## 工程与功能边界
+
+CSS 设计 Token、颜色、圆角、字体、毛玻璃、页面布局和美化控制器保持原样。允许根据实际需求拆分模块、调整实现；旧交接文档是历史材料，不作为当前任务清单或环境限制。
+
+动态文本不能直接作为 HTML；图片只接受受校验的本地栅格图片，上传失败不能回退到未压缩原文件。禁止自动截断原始聊天历史以伪装保存成功。
+
+世界书导入和 prompt 注入、朋友圈评论等仍是独立功能，不会把静态占位数据当成已实现内容。手动输入“自动记忆：开/关”可切换后台记忆；输入“记住：…”会把记忆、确认消息和草稿清除放在同一事务中。
+
+聊天列表的“聊天设置”入口位于“情侣空间”右侧。设置页可控制角色自动发消息、自动发朋友圈、发送间隔、最近消息总结轮数、心声显示和朋友圈/主动图片；图片生成要求在模型设置中配置兼容 `/images/generations` 的生图接口。朋友圈支持带图发布、回复和删除本人动态。
+
+美化页的全局壁纸只应用于主页和 Other 页，聊天、设置、朋友圈、情侣空间等页面不会继承主页壁纸。
+
+## 验证
+
+开发检查使用 Node.js 24；浏览器运行无需 npm 依赖。
+
+```sh
+npm --prefix 小手机 ci
+npm --prefix 小手机 run check
+npm --prefix 小手机 test
+cd 小手机
+npx playwright install chromium
+npm run test:browser
+```
+
+已有 Chromium 时可设置 `CHROMIUM_PATH=/usr/bin/chromium`。测试使用假 Key 和模拟网络，不调用收费模型。覆盖旧数据迁移与回滚、并发写入、任务竞争与页面关闭、备份恢复、10,000 条消息分页、API 边界、分词与预算、记忆晚到、资源回收取消、页面懒加载、结构校验及 UI 源码保护。GitHub Actions 还会重建并核对分词资源；依赖审计应保持 0 漏洞。
+
+性能采样可运行 `npm run benchmark`，在隔离 Chromium 中重复测量 100/1,000/10,000 条消息的恢复、打开、草稿和追加写入；输出是当前环境观测值，不作为手机设备性能承诺。
+
+详细记录见 `小手机/REFACTOR_NOTES.md`。

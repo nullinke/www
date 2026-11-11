@@ -1,1 +1,3 @@
-{"startCommand": "npx -y servor --reload"}
+{
+  "startCommand": "npm start"
+}

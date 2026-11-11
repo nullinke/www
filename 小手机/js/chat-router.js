@@ -14,7 +14,7 @@ export function parseChatRoute(url = window.location.href) {
   return {
     mode: VALID_MODES.has(params.get('nav')) ? params.get('nav') : 'list',
     source: VALID_SOURCES.has(params.get('from')) ? params.get('from') : 'home',
-    conversationId: conversation.id,
+    conversationId: conversation?.id || null,
   };
 }
 

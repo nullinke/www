@@ -1,21 +1,19 @@
+import { mutateRecord, NO_CHANGE, transact, requestResult, CHAT_KEY } from './database-state.js';
+import { readJson, subscribe } from './storage-state.js';
 // echo-memory-v1 数据格式：
 // { id: number, content: string, source: 'user'|'system', createdAt: ISO string, tags: string[] }
 
 const STORAGE_KEY = 'echo-memory-v1';
 
 function loadRaw() {
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    const parsed = stored ? JSON.parse(stored) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const value = readJson(STORAGE_KEY, []);
+  if (!Array.isArray(value)) throw new Error('记忆数据无效，请先备份。');
+  return value;
 }
 
 function normalizeItem(item) {
   if (!item || typeof item !== 'object') return null;
-  const id = Number(item.id) || Date.now();
+  const id = Number(item.id) || (Date.now() + Math.random());
   const content = String(item.content || '').trim();
   if (!content) return null;
   return {
@@ -24,6 +22,11 @@ function normalizeItem(item) {
     source: item.source === 'system' ? 'system' : 'user',
     createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
     tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+    conversationId: String(item.conversationId || ''),
+    charId: String(item.charId || ''),
+    turnId: String(item.turnId || ''),
+    sourceMessageIds: Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds.map(String) : [],
+    sourceUserMessageId: String(item.sourceUserMessageId || ''),
   };
 }
 
@@ -32,31 +35,19 @@ export function loadMemories() {
 }
 
 export function saveMemory(item) {
-  const normalized = normalizeItem({
-    id: item.id || Date.now(),
-    content: item.content,
-    source: item.source || 'user',
-    createdAt: item.createdAt || new Date().toISOString(),
-    tags: item.tags || [],
+  const normalized = normalizeItem({ ...item, id: item.id || Date.now() + Math.random() });
+  if (!normalized) return Promise.resolve();
+  return mutateRecord(STORAGE_KEY, [], raw => {
+    const list = raw.map(normalizeItem).filter(Boolean);
+    if (list.some(m => m.content === normalized.content && m.charId === normalized.charId)) return NO_CHANGE;
+    const index = list.findIndex(m => m.id === normalized.id);
+    if (index >= 0) list[index] = normalized; else list.unshift(normalized);
+    return list;
   });
-  if (!normalized) return;
-
-  const list = loadRaw().map(normalizeItem).filter(Boolean);
-  // id 已存在则更新，否则头插
-  const idx = list.findIndex((m) => m.id === normalized.id);
-  if (idx >= 0) {
-    list[idx] = normalized;
-  } else {
-    list.unshift(normalized);
-  }
-  _persist(list);
-  _dispatch();
 }
 
 export function deleteMemory(id) {
-  const list = loadRaw().map(normalizeItem).filter((m) => m && m.id !== Number(id));
-  _persist(list);
-  _dispatch();
+  return mutateRecord(STORAGE_KEY, [], raw => raw.map(normalizeItem).filter(m => m && m.id !== Number(id)));
 }
 
 // 搜索 + tag 筛选（均为可选）
@@ -89,21 +80,35 @@ export function formatMemoryDate(isoStr) {
 }
 
 export function subscribeToMemories(handler) {
-  const onStorage = (event) => {
-    if (event.key === STORAGE_KEY) handler(loadMemories());
-  };
-  window.addEventListener('storage', onStorage);
-  return () => window.removeEventListener('storage', onStorage);
-}
-
-function _persist(list) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  } catch { /* storage unavailable */ }
-}
-
-function _dispatch() {
-  window.dispatchEvent(new CustomEvent('echo-memory-change'));
+  return subscribe(STORAGE_KEY, 'echo-memory-change', handler, loadMemories);
 }
 
 export { STORAGE_KEY };
+
+/** Late extraction may only attach to the exact completed reply that still exists. */
+export function saveExtractedMemories({ conversationId, charId, turnId, sourceMessages, sourceUserMessage, items }) {
+  if (!sourceMessages?.length) return Promise.resolve();
+  const sourceMessageIds = sourceMessages.map(message => message.id);
+  return transact(['records', 'messages'], async tx => {
+    const store = tx.objectStore('records');
+    const meta = await requestResult(store.get(CHAT_KEY));
+    if (!meta?.conversations.some(c => c.id === conversationId) || !meta.conversations.some(c => c.id === charId)) return NO_CHANGE;
+    const rows = await requestResult(tx.objectStore('messages').index('byTurn').getAll([conversationId, turnId]));
+    const completed = rows.filter(row => row.status === 'complete' && row.replyCharId === charId);
+    if (completed.length !== sourceMessages.length || !completed.every(row => sourceMessages.some(source => source.id === row.id && source.text === row.text))) return NO_CHANGE;
+    if (sourceUserMessage) {
+      const current = await requestResult(tx.objectStore('messages').index('byId').get([conversationId, sourceUserMessage.id]));
+      if (!current || current.author !== 'mine' || current.text !== sourceUserMessage.text) return NO_CHANGE;
+    }
+    const list = (await requestResult(store.get(STORAGE_KEY)) || []).map(normalizeItem).filter(Boolean);
+    let changed = false;
+    for (const item of items.slice(0, 3)) {
+      if (typeof item?.content !== 'string' || !item.content.trim()) continue;
+      const value = normalizeItem({ id: Date.now() + Math.random(), content: item.content.trim().slice(0, 200), tags: Array.isArray(item.tags) ? item.tags.filter(tag => ['约定','事件','喜好','羁绊'].includes(tag)).slice(0, 4) : [], source: 'system', conversationId, charId, turnId, sourceMessageIds, sourceUserMessageId: sourceUserMessage?.id });
+      if (list.some(existing => existing.charId === charId && existing.content === value.content)) continue;
+      list.unshift(value); changed = true;
+    }
+    if (!changed) return NO_CHANGE;
+    store.put(list, STORAGE_KEY);
+  }, { keys: [STORAGE_KEY] });
+}

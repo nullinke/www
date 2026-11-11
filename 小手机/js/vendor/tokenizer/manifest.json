@@ -1,0 +1,20 @@
+{
+  "package": "js-tiktoken",
+  "version": "1.0.21",
+  "upstreamCommit": "4c8b748e07992c00386f3180af5c574b27b65139",
+  "bundler": "esbuild 0.28.2",
+  "files": {
+    "engine.js": {
+      "bytes": 7300,
+      "sha256": "753a68322b71fa0e99ecea6794d357a07ab44ca4b20c74556d5bb68419ee4eaa"
+    },
+    "cl100k_base.js": {
+      "bytes": 1090900,
+      "sha256": "23daf72c0ddb5d91fa2597dd092dfa33b8989d1a773912b1c6d34294a9a6b347"
+    },
+    "o200k_base.js": {
+      "bytes": 2325655,
+      "sha256": "57ae0045ea788e5868cd67088ab371b26f21fe1d1780741fd2e69704b7d76736"
+    }
+  }
+}
